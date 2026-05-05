@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Elder Risk Monitor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <header class="topbar" aria-label="Dashboard header">
+        <div>
+          <p class="eyebrow">ESP32-S3 Elder Care Terminal</p>
+          <h1>独居老人异常状态风险预警监控面板</h1>
+          <p class="topbar-note">比赛答辩展示 / 云端联调观察 / 本地提醒闭环验证</p>
+        </div>
+        <div class="topbar-actions">
+          <div class="refresh-chip" aria-live="polite">
+            <span>Auto Refresh</span>
+            <strong id="auto-refresh-state">Every 3s</strong>
+          </div>
+          <button id="refresh-button" type="button">Refresh Now</button>
+        </div>
+      </header>
+
+      <section id="hero-card" class="status-hero state-idle" aria-label="Current status">
+        <div class="hero-main">
+          <div class="hero-kicker">
+            <span class="section-label">Current State</span>
+            <span id="hero-live-badge" class="live-badge">WAITING</span>
+          </div>
+          <div class="state-line">
+            <div id="hero-state-mark" class="state-mark" aria-hidden="true">N</div>
+            <div>
+              <div id="hero-state" class="hero-state">NO DATA</div>
+              <div id="hero-risk" class="hero-risk">Risk Level: -</div>
+            </div>
+          </div>
+          <p id="hero-reason" class="hero-reason">Waiting for the first telemetry packet.</p>
+        </div>
+
+        <dl class="hero-facts">
+          <div>
+            <dt>Device ID</dt>
+            <dd id="hero-device">-</dd>
+          </div>
+          <div>
+            <dt>Last Report</dt>
+            <dd id="hero-last-seen">-</dd>
+          </div>
+          <div>
+            <dt>Reason Code</dt>
+            <dd id="hero-reason-code">-</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="content-grid" aria-label="Telemetry and risk summary">
+        <article class="panel telemetry-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">Realtime Telemetry</p>
+              <h2>核心传感器指标</h2>
+            </div>
+            <span id="metric-tick" class="quiet-pill">Tick -</span>
+          </div>
+          <div id="snapshot-empty" class="empty">No telemetry snapshot yet.</div>
+          <div id="snapshot-grid" class="metric-grid" hidden>
+            <article class="metric-card">
+              <span>Temperature</span>
+              <strong id="metric-temperature">-</strong>
+              <small>环境温度</small>
+            </article>
+            <article class="metric-card">
+              <span>Humidity</span>
+              <strong id="metric-humidity">-</strong>
+              <small>环境湿度</small>
+            </article>
+            <article class="metric-card">
+              <span>Illuminance</span>
+              <strong id="metric-lux">-</strong>
+              <small>光照强度</small>
+            </article>
+            <article class="metric-card">
+              <span>MQ2 Raw</span>
+              <strong id="metric-mq2">-</strong>
+              <small>烟雾 / 气体 ADC</small>
+            </article>
+            <article class="metric-card">
+              <span>Motion</span>
+              <strong id="metric-motion">-</strong>
+              <small>人体活动</small>
+            </article>
+            <article id="metric-state-card" class="metric-card metric-card-state">
+              <span>State / Risk</span>
+              <strong id="metric-state">-</strong>
+              <small>状态机输出</small>
+            </article>
+          </div>
+        </article>
+
+        <article class="panel explanation-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">Risk Interpretation</p>
+              <h2>风险解释</h2>
+            </div>
+          </div>
+          <div id="risk-summary" class="risk-summary">
+            <span class="reason-type">WAITING</span>
+            <h3>No active assessment</h3>
+            <p>Waiting for current state, risk level, and reason from the device.</p>
+          </div>
+          <div class="reason-stack">
+            <div>
+              <span class="section-label">Current Reason</span>
+              <strong id="metric-reason">-</strong>
+            </div>
+            <div>
+              <span class="section-label">Assessment Type</span>
+              <strong id="risk-category">-</strong>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="lower-grid" aria-label="Events and system status">
+        <article class="panel events-panel">
+          <div class="panel-head panel-head-wide">
+            <div>
+              <p class="section-label">Recent Abnormal Events</p>
+              <h2>最近异常事件</h2>
+              <p id="alerts-page-info" class="panel-note">Newest event first</p>
+            </div>
+            <label class="filter-inline" for="alerts-state-filter">
+              <span>State Filter</span>
+              <select id="alerts-state-filter">
+                <option value="ALL">All</option>
+                <option value="REMIND">REMIND</option>
+                <option value="ALARM">ALARM</option>
+                <option value="SOS">SOS</option>
+              </select>
+            </label>
+          </div>
+          <div id="empty-state" class="empty">No abnormal event received yet.</div>
+          <div id="alerts-list" class="alerts-list" hidden></div>
+          <div id="alerts-pagination" class="pagination-bar" hidden>
+            <button id="alerts-prev-button" type="button">Previous</button>
+            <span id="alerts-pagination-info">Page 1 / 1</span>
+            <button id="alerts-next-button" type="button">Next</button>
+          </div>
+        </article>
+
+        <aside class="panel system-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">Service Status</p>
+              <h2>系统运行状态</h2>
+            </div>
+          </div>
+          <dl class="system-list">
+            <div>
+              <dt>Service</dt>
+              <dd id="service-state" class="status-pill">Checking...</dd>
+            </div>
+            <div>
+              <dt>Last Receive</dt>
+              <dd id="service-last-received">-</dd>
+            </div>
+            <div>
+              <dt>Receive Age</dt>
+              <dd id="service-age">-</dd>
+            </div>
+            <div>
+              <dt>Total Alerts</dt>
+              <dd id="service-count">-</dd>
+            </div>
+            <div>
+              <dt>API</dt>
+              <dd id="endpoint-box" class="endpoint-text">Loading...</dd>
+            </div>
+          </dl>
+          <details class="payload-details">
+            <summary>Latest Raw Payload</summary>
+            <pre id="raw-payload-box">Waiting for data...</pre>
+          </details>
+        </aside>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
