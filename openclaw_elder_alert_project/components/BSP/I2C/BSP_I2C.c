@@ -1,3 +1,8 @@
+/**
+ * @file BSP_I2C.c
+ * @brief 共享 I2C 总线管理实现，全局单例，底层委托给 i2cdev 组件。
+ */
+
 #include "BSP_I2C.h"
 
 #include "i2cdev.h"

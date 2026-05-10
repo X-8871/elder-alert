@@ -1,3 +1,13 @@
+/**
+ * @file HttpAlertReporter.c
+ * @brief HTTP 告警上报器实现，通过 POST JSON 向云端推送事件和遥测数据。
+ *
+ * 上报触发条件：
+ *   - EVENT：应用状态变化、风险原因变化、SOS 新触发
+ *   - TELEMETRY：距上次上报超过 10 秒
+ * 不会因上报失败而阻塞主流程，失败仅记日志。
+ */
+
 #include "HttpAlertReporter.h"
 
 #include <inttypes.h>
@@ -7,15 +17,16 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "WiFiManager.h"
-#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 
-#define HTTP_ALERT_REPORTER_URL "https://spectator0618.online/api/alert"
+#define HTTP_ALERT_REPORTER_URL "http://118.25.94.68:3000/api/alert"
+#define HTTP_ALERT_REPORTER_DEVICE_TOKEN ""
 #define HTTP_ALERT_REPORTER_TIMEOUT_MS 3000
 #define HTTP_ALERT_REPORTER_TELEMETRY_INTERVAL_MS 10000U
 #define HTTP_ALERT_REPORTER_MAX_REASON_LEN 192
+#define HTTP_ALERT_REPORTER_MAX_ESCAPED_REASON_LEN 384
 #define HTTP_ALERT_REPORTER_MAX_DEVICE_ID_LEN 18
 #define HTTP_ALERT_REPORTER_REQUEST_BUFFER_LEN 768
 
@@ -81,6 +92,81 @@ static void build_reason(const risk_result_t *risk_result, char *buffer, size_t 
     }
 }
 
+static bool json_escape_string(const char *input, char *output, size_t output_size)
+{
+    static const char hex[] = "0123456789ABCDEF";
+
+    if (input == NULL || output == NULL || output_size == 0) {
+        return false;
+    }
+
+    size_t out_pos = 0;
+    for (size_t in_pos = 0; input[in_pos] != '\0'; ++in_pos) {
+        unsigned char ch = (unsigned char)input[in_pos];
+        const char *escape = NULL;
+
+        switch (ch) {
+        case '\"':
+            escape = "\\\"";
+            break;
+        case '\\':
+            escape = "\\\\";
+            break;
+        case '\b':
+            escape = "\\b";
+            break;
+        case '\f':
+            escape = "\\f";
+            break;
+        case '\n':
+            escape = "\\n";
+            break;
+        case '\r':
+            escape = "\\r";
+            break;
+        case '\t':
+            escape = "\\t";
+            break;
+        default:
+            break;
+        }
+
+        if (escape != NULL) {
+            for (size_t i = 0; escape[i] != '\0'; ++i) {
+                if (out_pos + 1U >= output_size) {
+                    output[out_pos] = '\0';
+                    return false;
+                }
+                output[out_pos++] = escape[i];
+            }
+            continue;
+        }
+
+        if (ch < 0x20U) {
+            if (out_pos + 6U >= output_size) {
+                output[out_pos] = '\0';
+                return false;
+            }
+            output[out_pos++] = '\\';
+            output[out_pos++] = 'u';
+            output[out_pos++] = '0';
+            output[out_pos++] = '0';
+            output[out_pos++] = hex[(ch >> 4) & 0x0FU];
+            output[out_pos++] = hex[ch & 0x0FU];
+            continue;
+        }
+
+        if (out_pos + 1U >= output_size) {
+            output[out_pos] = '\0';
+            return false;
+        }
+        output[out_pos++] = (char)ch;
+    }
+
+    output[out_pos] = '\0';
+    return true;
+}
+
 static report_mode_t get_report_mode(app_state_t state,
                                      const char *reason,
                                      uint32_t sos_trigger_count,
@@ -114,7 +200,6 @@ static esp_err_t post_alert_json(const char *json_payload,
         .url = HTTP_ALERT_REPORTER_URL,
         .method = HTTP_METHOD_POST,
         .timeout_ms = HTTP_ALERT_REPORTER_TIMEOUT_MS,
-        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -127,6 +212,9 @@ static esp_err_t post_alert_json(const char *json_payload,
         ret = esp_http_client_set_header(client,
                                          "X-Report-Mode",
                                          report_mode == REPORT_MODE_EVENT ? "event" : "telemetry");
+    }
+    if (ret == ESP_OK && strlen(HTTP_ALERT_REPORTER_DEVICE_TOKEN) > 0U) {
+        ret = esp_http_client_set_header(client, "X-Device-Token", HTTP_ALERT_REPORTER_DEVICE_TOKEN);
     }
     if (ret == ESP_OK) {
         ret = esp_http_client_set_post_field(client, json_payload, (int)strlen(json_payload));
@@ -176,6 +264,7 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
 
     s_last_handled_state = state;
     strncpy(s_last_handled_reason, reason, sizeof(s_last_handled_reason) - 1U);
+    s_last_handled_reason[sizeof(s_last_handled_reason) - 1U] = '\0';
     s_last_handled_sos_trigger_count = sos_trigger_count;
     s_last_report_attempt_ms = now_ms;
 
@@ -193,6 +282,12 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
         return ESP_OK;
     }
 
+    char escaped_reason[HTTP_ALERT_REPORTER_MAX_ESCAPED_REASON_LEN] = {0};
+    if (!json_escape_string(reason, escaped_reason, sizeof(escaped_reason))) {
+        ESP_LOGW(TAG, "reason json escape failed, skip report");
+        return ESP_OK;
+    }
+
     char request_body[HTTP_ALERT_REPORTER_REQUEST_BUFFER_LEN] = {0};
     int written = snprintf(
         request_body,
@@ -203,7 +298,7 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
         s_device_id,
         AppController_StateToString(state),
         RiskEngine_LevelToString(risk_result->level),
-        reason,
+        escaped_reason,
         sensor_data->aht_temperature,
         sensor_data->humidity,
         (unsigned int)sensor_data->lux,

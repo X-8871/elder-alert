@@ -151,6 +151,28 @@
           </div>
         </article>
 
+        <article class="panel speech-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">Speech Transcription</p>
+              <h2>语音识别测试</h2>
+            </div>
+            <span id="speech-asr-state" class="quiet-pill">Checking</span>
+          </div>
+          <div class="speech-upload">
+            <label class="file-picker" for="speech-file-input">
+              <span>Audio File</span>
+              <input id="speech-file-input" type="file" accept="audio/*,.wav,.mp3,.m4a,.pcm,.ogg" />
+            </label>
+            <button id="speech-upload-button" type="button">Upload & Transcribe</button>
+          </div>
+          <div class="speech-result">
+            <span class="section-label">Latest Result</span>
+            <strong id="speech-result-text">No speech result yet.</strong>
+            <p id="speech-result-meta">Upload a short WAV/MP3/M4A sample to test cloud ASR.</p>
+          </div>
+        </article>
+
         <aside class="panel system-panel">
           <div class="panel-head">
             <div>

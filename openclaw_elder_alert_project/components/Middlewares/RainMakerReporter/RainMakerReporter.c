@@ -1,3 +1,13 @@
+/**
+ * @file RainMakerReporter.c
+ * @brief ESP RainMaker 云端上报器实现，通过 MQTT 同步传感器数据和告警事件。
+ *
+ * 启动流程：WiFi 连接后调用 esp_rmaker_start()，失败时按 10 秒间隔重试。
+ * 参数更新：每次 Process 调用时更新所有 RainMaker 参数并上报。
+ * 时序数据：依赖 SNTP 时间同步，时间就绪后通过 Simple TS 上报传感器时序。
+ * 告警推送：EVENT 模式下通过 esp_rmaker_raise_alert 发送应用通知。
+ */
+
 #include "RainMakerReporter.h"
 
 #include <stdio.h>

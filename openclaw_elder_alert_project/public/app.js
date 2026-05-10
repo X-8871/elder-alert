@@ -37,6 +37,11 @@ const refs = {
   heroReasonCode: document.getElementById("hero-reason-code"),
   rawPayloadBox: document.getElementById("raw-payload-box"),
   autoRefreshState: document.getElementById("auto-refresh-state"),
+  speechAsrState: document.getElementById("speech-asr-state"),
+  speechFileInput: document.getElementById("speech-file-input"),
+  speechUploadButton: document.getElementById("speech-upload-button"),
+  speechResultText: document.getElementById("speech-result-text"),
+  speechResultMeta: document.getElementById("speech-result-meta"),
 };
 
 const AUTO_REFRESH_MS = 3000;
@@ -112,6 +117,38 @@ function formatAge(value) {
 
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m ago`;
+}
+
+function formatBytes(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return "-";
+  }
+  if (numeric < 1024) {
+    return `${numeric} B`;
+  }
+  if (numeric < 1024 * 1024) {
+    return `${(numeric / 1024).toFixed(1)} KB`;
+  }
+  return `${(numeric / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function inferAudioFormat(file) {
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  if (["wav", "mp3", "m4a", "pcm", "opus", "ogg"].includes(extension)) {
+    return extension;
+  }
+
+  if (file.type.includes("mpeg")) {
+    return "mp3";
+  }
+  if (file.type.includes("mp4") || file.type.includes("m4a")) {
+    return "m4a";
+  }
+  if (file.type.includes("opus")) {
+    return "opus";
+  }
+  return "wav";
 }
 
 function normalizeState(state) {
@@ -429,11 +466,14 @@ function renderServiceStatus(data) {
   refs.serviceCount.textContent = formatValue(data.totalAlerts);
   refs.serviceLastReceived.textContent = formatTimestamp(data.lastReceivedAt);
   refs.serviceAge.textContent = formatAge(data.lastReceivedAt);
-  refs.endpointBox.textContent = `POST ${data.alertPath} / GET ${data.latestPath} / GET /api/status / GET /api/alerts`;
+  refs.endpointBox.textContent =
+    `POST ${data.alertPath} / GET ${data.latestPath} / GET /api/status / GET /api/alerts / POST ${data.speechTranscribePath}`;
+  refs.speechAsrState.textContent = data.speechAsrConfigured ? data.speechAsrEngine || "ASR READY" : "ASR NOT SET";
+  refs.speechAsrState.className = `quiet-pill ${data.speechAsrConfigured ? "state-normal" : "state-stale"}`;
 }
 
 async function loadServiceStatus() {
-  const response = await fetch("/api/status");
+  const response = await fetch("/api/status", { cache: "no-store" });
   if (!response.ok) {
     throw new Error("Failed to load service status");
   }
@@ -443,7 +483,7 @@ async function loadServiceStatus() {
 }
 
 async function loadLatestSnapshot() {
-  const response = await fetch("/api/latest");
+  const response = await fetch("/api/latest", { cache: "no-store" });
   if (!response.ok) {
     throw new Error("Failed to load latest snapshot");
   }
@@ -455,7 +495,7 @@ async function loadLatestSnapshot() {
 }
 
 async function loadAlerts() {
-  const response = await fetch("/api/alerts");
+  const response = await fetch("/api/alerts", { cache: "no-store" });
   if (!response.ok) {
     throw new Error("Failed to load alerts");
   }
@@ -465,22 +505,97 @@ async function loadAlerts() {
   renderAlerts(latestAlerts);
 }
 
+function renderLatestSpeech(item) {
+  if (!item) {
+    refs.speechResultText.textContent = "No speech result yet.";
+    refs.speechResultMeta.textContent = "Upload a short WAV/MP3/M4A sample to test cloud ASR.";
+    return;
+  }
+
+  refs.speechResultText.textContent = item.result || "(empty recognition result)";
+  refs.speechResultMeta.textContent =
+    `${formatTimestamp(item.received_at)} · ${formatBytes(item.bytes)} · ${formatValue(item.voice_format)} · ${formatValue(item.engine)}`;
+}
+
+async function loadLatestSpeech() {
+  const response = await fetch("/api/speech/latest", { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error("Failed to load speech result");
+  }
+
+  const data = await response.json();
+  renderLatestSpeech(data.latest || null);
+}
+
+async function uploadSpeechFile() {
+  const file = refs.speechFileInput.files[0];
+  if (!file) {
+    refs.speechResultMeta.textContent = "Choose an audio file first.";
+    return;
+  }
+
+  refs.speechUploadButton.disabled = true;
+  refs.speechResultMeta.textContent = "Uploading audio and waiting for ASR...";
+  try {
+    const format = inferAudioFormat(file);
+    const response = await fetch(`/api/speech/transcribe?format=${encodeURIComponent(format)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": file.type || "application/octet-stream",
+        "X-Audio-Format": format,
+      },
+      body: file,
+    });
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok || !data?.ok) {
+      throw new Error(data?.message || "Speech transcription failed");
+    }
+
+    renderLatestSpeech(data.speech);
+  } catch (error) {
+    refs.speechResultText.textContent = "Transcription failed";
+    refs.speechResultMeta.textContent = error.message;
+  } finally {
+    refs.speechUploadButton.disabled = false;
+  }
+}
+
 async function refreshAll() {
   refs.refreshButton.disabled = true;
-  try {
-    await Promise.all([loadServiceStatus(), loadLatestSnapshot(), loadAlerts()]);
-  } catch (error) {
+
+  const [serviceResult, snapshotResult, alertsResult, speechResult] = await Promise.allSettled([
+    loadServiceStatus(),
+    loadLatestSnapshot(),
+    loadAlerts(),
+    loadLatestSpeech(),
+  ]);
+
+  if (serviceResult.status === "rejected") {
     refs.serviceState.textContent = "Error";
     refs.serviceState.className = "status-pill state-offline";
     refs.serviceCount.textContent = "-";
     refs.serviceLastReceived.textContent = "-";
-    refs.serviceAge.textContent = error.message;
-  } finally {
-    refs.refreshButton.disabled = false;
+    refs.serviceAge.textContent = serviceResult.reason.message;
   }
+
+  if (snapshotResult.status === "rejected") {
+    refs.heroLiveBadge.textContent = "STALE";
+  }
+
+  if (alertsResult.status === "rejected") {
+    refs.alertsPageInfo.textContent = alertsResult.reason.message;
+  }
+
+  if (speechResult.status === "rejected") {
+    refs.speechResultMeta.textContent = `Speech refresh failed: ${speechResult.reason.message}`;
+  }
+
+  refs.refreshButton.disabled = false;
 }
 
 refs.refreshButton.addEventListener("click", refreshAll);
+refs.speechUploadButton.addEventListener("click", uploadSpeechFile);
 refs.alertsStateFilter.addEventListener("change", (event) => {
   currentAlertStateFilter = event.target.value;
   currentAlertsPage = 1;

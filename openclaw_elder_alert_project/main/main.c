@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 
+#include "BSP_INMP441.h"
 #include "AppController.h"
 #include "AlertController.h"
 #include "DisplayController.h"
@@ -14,9 +15,97 @@
 #include "RainMakerReporter.h"
 #include "RiskEngine.h"
 #include "SensorHub.h"
+#include "SpeechUploader.h"
 #include "WiFiManager.h"
 
 #define TAG "SENSOR_DEMO"
+
+#define ENABLE_INMP441_LEVEL_TEST  0
+#define ENABLE_INMP441_UPLOAD_TEST 1
+#define INMP441_TEST_BCLK_GPIO     GPIO_NUM_12
+#define INMP441_TEST_WS_GPIO       GPIO_NUM_13
+#define INMP441_TEST_DIN_GPIO      GPIO_NUM_14
+#define INMP441_UPLOAD_RECORD_MS   3000U
+
+#if ENABLE_INMP441_LEVEL_TEST
+static void run_inmp441_level_test(void)
+{
+    const bsp_inmp441_config_t mic_config = {
+        .bclk_gpio = INMP441_TEST_BCLK_GPIO,
+        .ws_gpio = INMP441_TEST_WS_GPIO,
+        .data_in_gpio = INMP441_TEST_DIN_GPIO,
+        .sample_rate_hz = BSP_INMP441_DEFAULT_SAMPLE_RATE_HZ,
+    };
+
+    esp_err_t ret = BSP_INMP441_Init(&mic_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "INMP441 init failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ESP_LOGI(TAG, "INMP441 level test started, speak or clap near the microphone");
+    while (1) {
+        bsp_inmp441_level_t level = {0};
+        ret = BSP_INMP441_ReadLevel(&level, 1000);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG,
+                     "INMP441 level: mean_abs=%" PRId32 " peak_abs=%" PRId32 " samples=%u",
+                     level.mean_abs,
+                     level.peak_abs,
+                     (unsigned)level.sample_count);
+        } else {
+            ESP_LOGW(TAG, "INMP441 read failed: %s", esp_err_to_name(ret));
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+#endif
+
+#if ENABLE_INMP441_UPLOAD_TEST
+static bool s_speech_upload_ready = false;
+
+static void init_inmp441_upload_test(void)
+{
+    const speech_uploader_config_t speech_config = {
+        .bclk_gpio = INMP441_TEST_BCLK_GPIO,
+        .ws_gpio = INMP441_TEST_WS_GPIO,
+        .data_in_gpio = INMP441_TEST_DIN_GPIO,
+        .sample_rate_hz = BSP_INMP441_DEFAULT_SAMPLE_RATE_HZ,
+    };
+
+    esp_err_t ret = SpeechUploader_Init(&speech_config);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SpeechUploader init failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    s_speech_upload_ready = true;
+    ESP_LOGI(TAG, "speech upload test ready, press GPIO17 record key to upload a short WAV");
+}
+
+static void service_inmp441_upload_test(void)
+{
+    if (!s_speech_upload_ready) {
+        return;
+    }
+
+    bool record_requested = false;
+    esp_err_t ret = InputController_GetRecordEvent(&record_requested);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "record key check failed: %s", esp_err_to_name(ret));
+        return;
+    }
+    if (!record_requested) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "record key pressed, record and upload speech");
+    ret = SpeechUploader_RecordWavAndUpload(INMP441_UPLOAD_RECORD_MS);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "speech upload test failed: %s", esp_err_to_name(ret));
+    }
+}
+#endif
 
 static esp_err_t prepare_connectivity_primitives(void)
 {
@@ -114,6 +203,11 @@ static esp_err_t prepare_connectivity_primitives(void)
  */
 void app_main(void)
 {
+#if ENABLE_INMP441_LEVEL_TEST
+    run_inmp441_level_test();
+    return;
+#endif
+
     /* 第 1 步：先把所有“数据输入链路”准备好，后续主循环才能拿到统一传感器快照。 */
     esp_err_t ret = SensorHub_Init();
     if (ret != ESP_OK) {
@@ -181,6 +275,10 @@ void app_main(void)
         ESP_LOGW(TAG, "HttpAlertReporter init failed: %s", esp_err_to_name(ret));
     }
 
+#if ENABLE_INMP441_UPLOAD_TEST
+    init_inmp441_upload_test();
+#endif
+
     /* 第 9 步：初始化 RainMaker 上云能力。失败不阻塞本地闭环。 */
     while (1) {
         /* 每一轮 while 都表示“采一帧环境快照，并据此推进一次系统业务状态”。 */
@@ -199,9 +297,12 @@ void app_main(void)
              * - remind_timeout_active: 本地提醒是否已因无人确认升级
              */
             risk_context.now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-            risk_context.inactive_ms = sensor_data.motion_detected ? 0 : AppController_GetInactiveTimeMs();
+            risk_context.inactive_ms = (!sensor_data.am312_ok || sensor_data.motion_detected)
+                                           ? 0
+                                           : AppController_GetInactiveTimeMs();
             risk_context.manual_sos_active = AppController_IsSosLatched();
-            risk_context.remind_timeout_active = !sensor_data.motion_detected &&
+            risk_context.remind_timeout_active = sensor_data.am312_ok &&
+                                                  !sensor_data.motion_detected &&
                                                   AppController_IsRemindTimeoutLatched();
 
             /* 配网联调期间先关闭周期性传感器串口输出，保留 BLE/Wi-Fi/RainMaker 日志。 */
@@ -265,6 +366,10 @@ void app_main(void)
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "AppController service failed: %s", esp_err_to_name(ret));
             }
+
+#if ENABLE_INMP441_UPLOAD_TEST
+            service_inmp441_upload_test();
+#endif
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }

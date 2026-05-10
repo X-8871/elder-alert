@@ -1,3 +1,8 @@
+/**
+ * @file BSP_BMP280.h
+ * @brief BMP280 气压温度传感器驱动封装，通过 I2C 总线通信。
+ */
+
 #pragma once
 
 #include <stdbool.h>

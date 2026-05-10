@@ -1,3 +1,11 @@
+/**
+ * @file Alert.c
+ * @brief LED + 蜂鸣器声光提示驱动实现，基于 FreeRTOS tick 的节拍式闪烁/鸣叫控制。
+ *
+ * 不同模式对应不同的闪烁频率：
+ *   NORMAL 1000ms / REMIND 500ms / ALARM 250ms / SOS 120ms
+ */
+
 #include "BSP_Alert.h"
 
 #include "freertos/FreeRTOS.h"
@@ -164,7 +172,7 @@ esp_err_t BSP_Alert_Update(void)
         interval = pdMS_TO_TICKS(ALERT_SOS_BLINK_MS);
         if ((now - s_last_toggle_tick) >= interval) {
             s_last_toggle_tick = now;
-            return apply_outputs(!s_led_on, true);
+            return apply_outputs(!s_led_on, !s_buzzer_on);
         }
         return ESP_OK;
     default:

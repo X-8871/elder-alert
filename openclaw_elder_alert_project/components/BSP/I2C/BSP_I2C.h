@@ -1,3 +1,11 @@
+/**
+ * @file BSP_I2C.h
+ * @brief 共享 I2C 总线管理，为 AHT20/BMP280/BH1750/OLED 等设备提供统一的总线初始化和配置查询。
+ *
+ * 全局只初始化一次，重复调用相同配置不会报错；不同配置会被拒绝。
+ * 底层依赖 i2cdev 组件。
+ */
+
 #pragma once
 
 #include <stdbool.h>

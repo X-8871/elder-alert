@@ -1,3 +1,8 @@
+/**
+ * @file BSP_AHT20.h
+ * @brief AHT20 温湿度传感器驱动封装，通过 I2C 总线通信。
+ */
+
 #pragma once
 
 #include <stdbool.h>

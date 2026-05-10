@@ -1,3 +1,8 @@
+/**
+ * @file BMP280.c
+ * @brief BMP280 气压温度传感器 BSP 驱动实现，依赖共享 I2C 总线。
+ */
+
 #include "BSP_BMP280.h"
 
 #include <string.h>

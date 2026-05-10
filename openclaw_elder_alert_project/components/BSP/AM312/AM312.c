@@ -1,3 +1,8 @@
+/**
+ * @file AM312.c
+ * @brief AM312 人体红外传感器 BSP 驱动实现，纯 GPIO 输入，支持高低电平有效极性配置。
+ */
+
 #include "BSP_AM312.h"
 
 #include "esp_log.h"

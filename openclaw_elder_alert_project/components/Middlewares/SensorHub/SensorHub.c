@@ -1,3 +1,11 @@
+/**
+ * @file SensorHub.c
+ * @brief 传感器中枢实现，统一初始化和采集 AHT20/BMP280/BH1750/MQ2/AM312。
+ *
+ * 各传感器独立初始化，单个失败不影响其他；读取时逐个采集，失败的传感器
+ * 对应 _ok 标记为 false，上层可据此选择性使用数据。
+ */
+
 #include "SensorHub.h"
 
 #include "freertos/FreeRTOS.h"
@@ -124,6 +132,8 @@ esp_err_t SensorHub_Read(sensor_hub_data_t *data)
         ret = BSP_AHT20_Read(&data->aht_temperature, &data->humidity);
         if (ret != ESP_OK) {
             log_sensor_fault("AHT20", "read", ret);
+        } else {
+            data->aht20_ok = true;
         }
     } else {
         log_sensor_not_detected("AHT20");
@@ -133,6 +143,8 @@ esp_err_t SensorHub_Read(sensor_hub_data_t *data)
         ret = BSP_BMP280_Read(&data->bmp_temperature, &data->pressure);
         if (ret != ESP_OK) {
             log_sensor_fault("BMP280", "read", ret);
+        } else {
+            data->bmp280_ok = true;
         }
     } else {
         log_sensor_not_detected("BMP280");
@@ -142,6 +154,8 @@ esp_err_t SensorHub_Read(sensor_hub_data_t *data)
         ret = BSP_BH1750_Read(&data->lux);
         if (ret != ESP_OK) {
             log_sensor_fault("BH1750", "read", ret);
+        } else {
+            data->bh1750_ok = true;
         }
     } else {
         log_sensor_not_detected("BH1750");
@@ -160,6 +174,8 @@ esp_err_t SensorHub_Read(sensor_hub_data_t *data)
                          data->mq2_raw,
                          SENSOR_HUB_MQ2_MIN_VALID_RAW,
                          SENSOR_HUB_MQ2_MAX_VALID_RAW);
+            } else {
+                data->mq2_ok = true;
             }
         } else {
             log_sensor_fault("MQ2", "read", ret);
@@ -170,14 +186,18 @@ esp_err_t SensorHub_Read(sensor_hub_data_t *data)
 
     if (s_sensor_ok.am312) {
         /* 先留原始电平，再给出已经按高低有效极性解释过的 motion_detected。 */
-        ret = BSP_AM312_GetRawLevel(&data->am312_raw_level);
-        if (ret != ESP_OK) {
-            log_sensor_fault("AM312", "raw_read", ret);
+        esp_err_t raw_ret = BSP_AM312_GetRawLevel(&data->am312_raw_level);
+        if (raw_ret != ESP_OK) {
+            log_sensor_fault("AM312", "raw_read", raw_ret);
         }
 
-        ret = BSP_AM312_IsMotionDetected(&data->motion_detected);
-        if (ret != ESP_OK) {
-            log_sensor_fault("AM312", "read", ret);
+        esp_err_t motion_ret = BSP_AM312_IsMotionDetected(&data->motion_detected);
+        if (motion_ret != ESP_OK) {
+            log_sensor_fault("AM312", "read", motion_ret);
+        }
+
+        if (raw_ret == ESP_OK && motion_ret == ESP_OK) {
+            data->am312_ok = true;
         }
     } else {
         log_sensor_not_detected("AM312");
@@ -193,32 +213,32 @@ void SensorHub_LogData(const sensor_hub_data_t *data)
         return;
     }
 
-    if (s_sensor_ok.aht20) {
+    if (data->aht20_ok) {
         ESP_LOGI(TAG,
                  "AHT20: temperature=%.2f C humidity=%.2f %%",
                  data->aht_temperature,
                  data->humidity);
     }
 
-    if (s_sensor_ok.bmp280) {
+    if (data->bmp280_ok) {
         ESP_LOGI(TAG,
                  "BMP280: temperature=%.2f C pressure=%.2f Pa",
                  data->bmp_temperature,
                  data->pressure);
     }
 
-    if (s_sensor_ok.bh1750) {
+    if (data->bh1750_ok) {
         ESP_LOGI(TAG, "BH1750: illuminance=%u lux", data->lux);
     }
 
-    if (s_sensor_ok.mq2) {
+    if (data->mq2_ok) {
         ESP_LOGI(TAG,
                  "MQ2: raw=%d voltage=%d mV",
                  data->mq2_raw,
                  data->mq2_voltage_mv);
     }
 
-    if (s_sensor_ok.am312) {
+    if (data->am312_ok) {
         ESP_LOGI(TAG, "AM312: motion_detected=%d", data->motion_detected);
     }
 }

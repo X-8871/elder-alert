@@ -1,3 +1,12 @@
+/**
+ * @file InputController.c
+ * @brief 输入控制器实现，封装确认键短按/长按、SOS 键和录音键的事件检测逻辑。
+ *
+ * 确认键（GPIO7）：轮询消抖，支持短按事件和 8 秒长按事件（用于配网重置）。
+ * SOS 键（GPIO8）：中断驱动，一次性事件，触发后需重新等待下次中断。
+ * 录音键（GPIO17）：中断驱动，一次性事件，触发后需重新等待下次中断。
+ */
+
 #include "InputController.h"
 
 #include "esp_log.h"
@@ -52,7 +61,7 @@ esp_err_t InputController_Init(void)
         return ESP_OK;
     }
 
-    /* GPIO7 走轮询消抖，GPIO17 走中断事件，两者由底层 KEY 模块分别初始化。 */
+    /* GPIO7 走轮询消抖，GPIO8/GPIO17 走中断事件，由底层 KEY 模块分别初始化。 */
     KEY_Init();
     KEY_EXTI_Init();
 
@@ -64,7 +73,8 @@ esp_err_t InputController_Init(void)
 
     s_initialized = true;
     ESP_LOGI(TAG, "confirm key ready on GPIO7");
-    ESP_LOGI(TAG, "sos key ready on GPIO17");
+    ESP_LOGI(TAG, "sos key ready on GPIO8");
+    ESP_LOGI(TAG, "record key ready on GPIO17");
     return ESP_OK;
 }
 
@@ -83,6 +93,25 @@ esp_err_t InputController_GetConfirmEvent(bool *confirmed)
     if (s_confirm_short_pending) {
         s_confirm_short_pending = false;
         *confirmed = true;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t InputController_GetRecordEvent(bool *record_triggered)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (record_triggered == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int is_pressed = 0;
+    *record_triggered = false;
+
+    if (KEY_RECORD_GetEvent(&is_pressed) && is_pressed) {
+        *record_triggered = true;
     }
 
     return ESP_OK;

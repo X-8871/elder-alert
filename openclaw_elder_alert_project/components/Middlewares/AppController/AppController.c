@@ -1,3 +1,15 @@
+/**
+ * @file AppController.c
+ * @brief 应用层状态机实现。
+ *
+ * 状态流转规则（优先级从高到低）：
+ *   1. 用户手动 SOS 键 → 立即进入 SOS（锁存，需用户确认解除）
+ *   2. REMIND 状态超时未确认 → 升级为 ALARM
+ *   3. RiskEngine 判定 WARNING / EMERGENCY → ALARM
+ *   4. RiskEngine 判定 REMIND → REMIND
+ *   5. 其余情况 → NORMAL
+ */
+
 #include "AppController.h"
 
 #include <inttypes.h>
@@ -19,6 +31,15 @@ static app_state_t s_current_state = APP_STATE_NORMAL;
 static bool s_sos_latched = false;
 static bool s_remind_timeout_latched = false;
 static uint32_t s_sos_trigger_count = 0;
+
+static uint32_t get_remind_confirm_timeout_ms(void)
+{
+    if (APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL) {
+        return APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_REAL;
+    }
+
+    return APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_DEMO;
+}
 
 static esp_err_t apply_state(app_state_t next_state)
 {
@@ -109,8 +130,8 @@ esp_err_t AppController_Process(const sensor_hub_data_t *sensor_data, const risk
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (sensor_data->motion_detected) {
-        /* 只要本轮检测到人体活动，就刷新最后活动时间。 */
+    if (!sensor_data->am312_ok || sensor_data->motion_detected) {
+        /* AM312 不可用时不把未知活动状态误当作“长时间无活动”。 */
         s_last_motion_tick = xTaskGetTickCount();
         s_remind_timeout_latched = false;
     }
@@ -209,13 +230,17 @@ esp_err_t AppController_Service(void)
     if (s_current_state == APP_STATE_REMIND && s_remind_start_tick != 0) {
         TickType_t elapsed_ticks = xTaskGetTickCount() - s_remind_start_tick;
         uint32_t elapsed_ms = (uint32_t)(elapsed_ticks * portTICK_PERIOD_MS);
-        if (elapsed_ms >= APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS) {
+        uint32_t timeout_ms = get_remind_confirm_timeout_ms();
+        if (elapsed_ms >= timeout_ms) {
             s_remind_timeout_latched = true;
             ret = apply_state(APP_STATE_ALARM);
             if (ret != ESP_OK) {
                 return ret;
             }
-            ESP_LOGW(TAG, "remind_timeout_escalated elapsed_ms=%" PRIu32, elapsed_ms);
+            ESP_LOGW(TAG,
+                     "remind_timeout_escalated elapsed_ms=%" PRIu32 " timeout_ms=%" PRIu32,
+                     elapsed_ms,
+                     timeout_ms);
         }
     }
 

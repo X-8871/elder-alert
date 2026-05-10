@@ -322,13 +322,15 @@ dd {
 }
 
 .events-panel,
-.system-panel {
+.system-panel,
+.speech-panel {
   height: 100%;
 }
 
 .events-panel {
   display: flex;
   flex-direction: column;
+  grid-row: span 2;
 }
 
 .metric-grid {
@@ -525,6 +527,60 @@ select {
   margin-top: 18px;
 }
 
+.speech-upload {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.file-picker {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 13px 14px;
+  background: var(--paper-soft);
+}
+
+.file-picker span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.file-picker input {
+  width: 100%;
+  color: var(--text);
+}
+
+.speech-result {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-left: 8px solid var(--normal);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  background: var(--paper-soft);
+}
+
+.speech-result strong {
+  display: block;
+  margin-top: 10px;
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.speech-result p {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .status-pill {
   width: max-content;
   margin-top: 8px;
@@ -621,6 +677,10 @@ pre {
     grid-template-columns: 1fr;
   }
 
+  .events-panel {
+    grid-row: auto;
+  }
+
   .hero-facts {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -652,6 +712,10 @@ pre {
   .refresh-chip,
   button {
     width: 100%;
+  }
+
+  .speech-upload {
+    grid-template-columns: 1fr;
   }
 
   .state-line {

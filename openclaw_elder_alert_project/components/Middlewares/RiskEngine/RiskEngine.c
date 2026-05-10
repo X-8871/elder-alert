@@ -1,3 +1,14 @@
+/**
+ * @file RiskEngine.c
+ * @brief 风险评估引擎实现，多维度评分 + 滑动平均滤波 + 延迟确认机制。
+ *
+ * 评估维度：
+ *   - 活动状态：无活动超时、低光照无活动、提醒超时
+ *   - 环境指标：高温、高湿度、MQ2 烟雾/可燃气体
+ *   - 手动求助：SOS 键
+ * MQ2 采用滑动平均滤波 + 持续超阈值确认，避免瞬时噪声误报。
+ */
+
 #include "RiskEngine.h"
 
 #include <string.h>
@@ -30,6 +41,14 @@ static int s_mq2_samples[RISK_ENGINE_MQ2_FILTER_WINDOW] = {0};
 static uint8_t s_mq2_sample_count = 0;
 static uint8_t s_mq2_sample_index = 0;
 static uint32_t s_mq2_over_threshold_since_ms = 0;
+
+static void reset_mq2_tracking(void)
+{
+    memset(s_mq2_samples, 0, sizeof(s_mq2_samples));
+    s_mq2_sample_count = 0;
+    s_mq2_sample_index = 0;
+    s_mq2_over_threshold_since_ms = 0;
+}
 
 static const risk_config_t *get_active_config(void)
 {
@@ -122,15 +141,23 @@ void RiskEngine_Evaluate(const sensor_hub_data_t *data,
     }
 
     const risk_config_t *config = get_active_config();
-    result->no_motion_timeout = context->inactive_ms >= config->no_motion_remind_ms;
+    result->no_motion_timeout = data->am312_ok &&
+                                context->inactive_ms >= config->no_motion_remind_ms;
     result->low_light_no_motion = result->no_motion_timeout &&
+                                  data->bh1750_ok &&
                                   data->lux <= config->dark_lux_threshold;
-    result->high_temperature = data->aht_temperature >= config->heat_temp_c;
-    result->high_humidity = data->humidity >= config->heat_humidity_percent;
-    result->mq2_filtered_raw = update_mq2_filtered_raw(data->mq2_raw, config->mq2_filter_window);
-    result->mq2_warning = evaluate_mq2_confirmed(result->mq2_filtered_raw, config, context->now_ms);
+    result->high_temperature = data->aht20_ok &&
+                               data->aht_temperature >= config->heat_temp_c;
+    result->high_humidity = data->aht20_ok &&
+                            data->humidity >= config->heat_humidity_percent;
+    if (data->mq2_ok) {
+        result->mq2_filtered_raw = update_mq2_filtered_raw(data->mq2_raw, config->mq2_filter_window);
+        result->mq2_warning = evaluate_mq2_confirmed(result->mq2_filtered_raw, config, context->now_ms);
+    } else {
+        reset_mq2_tracking();
+    }
     result->manual_sos = context->manual_sos_active;
-    result->remind_timeout = context->remind_timeout_active;
+    result->remind_timeout = data->am312_ok && context->remind_timeout_active;
 
     if (result->no_motion_timeout) {
         result->activity_score += 1;

@@ -1,3 +1,11 @@
+/**
+ * @file MQ2.c
+ * @brief MQ2 烟雾/可燃气体传感器 BSP 驱动实现，ADC 单次采集 + 校准。
+ *
+ * GPIO 到 ADC 通道的映射支持 GPIO1~GPIO10，校准方案自动适配
+ * curve fitting 或 line fitting（取决于芯片支持）。
+ */
+
 #include "BSP_MQ2.h"
 
 #include <stdbool.h>

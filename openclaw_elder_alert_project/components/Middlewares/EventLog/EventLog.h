@@ -1,3 +1,11 @@
+/**
+ * @file EventLog.h
+ * @brief 异常事件日志，采用环形缓冲区保存最近 N 条异常事件记录。
+ *
+ * 每条记录包含时间戳、应用状态、风险原因和完整的传感器快照，
+ * 便于事后复盘分析。支持去重：连续相同状态和原因不会重复写入。
+ */
+
 #pragma once
 
 #include <stdbool.h>
@@ -8,8 +16,8 @@
 #include "SensorHub.h"
 #include "esp_err.h"
 
-#define EVENT_LOG_MAX_RECORDS 10
-#define EVENT_LOG_REASON_MAX_LEN 192
+#define EVENT_LOG_MAX_RECORDS 10      /* 环形缓冲区容量 */
+#define EVENT_LOG_REASON_MAX_LEN 192  /* 风险原因字符串最大长度 */
 
 typedef struct {
     /* 记录落库时刻，单位 ms，来源于 FreeRTOS tick 转换后的运行时间。 */

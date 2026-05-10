@@ -1,3 +1,11 @@
+/**
+ * @file DisplayController.c
+ * @brief OLED 显示控制器实现，将状态、传感器、风险信息格式化为 4 行文本。
+ *
+ * 显示布局：行0 状态+健康 / 行1 温湿度 / 行2 气压+光照 / 行3 风险+WiFi
+ * OLED 不可用时自动降级为空操作，不影响其他模块。
+ */
+
 #include "DisplayController.h"
 
 #include <stdio.h>
@@ -25,6 +33,21 @@ static const char *risk_level_short_string(risk_level_t level)
     default:
         return "UNKNOWN";
     }
+}
+
+static const char *sensor_health_short_string(const sensor_hub_data_t *sensor_data)
+{
+    if (sensor_data == NULL) {
+        return "UNK";
+    }
+
+    return (sensor_data->aht20_ok &&
+            sensor_data->bmp280_ok &&
+            sensor_data->bh1750_ok &&
+            sensor_data->mq2_ok &&
+            sensor_data->am312_ok)
+               ? "OK"
+               : "FAULT";
 }
 
 esp_err_t DisplayController_Init(void)
@@ -62,7 +85,11 @@ esp_err_t DisplayController_Update(app_state_t app_state,
     char line3[22] = {0};
     const char *lines[BSP_OLED_MAX_LINES] = {line0, line1, line2, line3};
 
-    snprintf(line0, sizeof(line0), "ST:%s", AppController_StateToString(app_state));
+    snprintf(line0,
+             sizeof(line0),
+             "ST:%s S:%s",
+             AppController_StateToString(app_state),
+             sensor_health_short_string(sensor_data));
     snprintf(line1, sizeof(line1), "T:%.1fC H:%.0f%%", sensor_data->aht_temperature, sensor_data->humidity);
     snprintf(line2, sizeof(line2), "P:%.1fK L:%u", sensor_data->pressure / 1000.0f, (unsigned int)sensor_data->lux);
     snprintf(line3,

@@ -1,3 +1,8 @@
+/**
+ * @file AHT20.c
+ * @brief AHT20 温湿度传感器 BSP 驱动实现，依赖共享 I2C 总线。
+ */
+
 #include "BSP_AHT20.h"
 
 #include <string.h>

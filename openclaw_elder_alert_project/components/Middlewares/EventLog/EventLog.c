@@ -1,3 +1,11 @@
+/**
+ * @file EventLog.c
+ * @brief 异常事件日志实现，环形缓冲区 + 去重 + 传感器快照。
+ *
+ * 写入策略：仅在异常状态（REMIND/ALARM/SOS）且状态或原因发生变化时写入，
+ * 避免 ALARM 持续期间每轮循环都刷一条相同记录。回到 NORMAL 时重置比较基准。
+ */
+
 #include "EventLog.h"
 
 #include <inttypes.h>

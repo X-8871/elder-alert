@@ -1,3 +1,8 @@
+/**
+ * @file BSP_BH1750.h
+ * @brief BH1750 光照度传感器驱动封装，通过 I2C 总线通信，连续高分辨率模式。
+ */
+
 #pragma once
 
 #include <stdbool.h>

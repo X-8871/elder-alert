@@ -1,3 +1,11 @@
+/**
+ * @file AlertController.c
+ * @brief 声光提示控制器实现，将应用状态翻译为 BSP_Alert 的输出模式。
+ *
+ * 支持用户确认后静音：静音期间保持业务上的 ALARM 状态，但本地声光切回 NORMAL。
+ * 状态变更时自动清除静音标记（SOS/REMIND/NORMAL 切换时重置）。
+ */
+
 #include "AlertController.h"
 
 #include "esp_log.h"

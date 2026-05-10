@@ -1,3 +1,11 @@
+/**
+ * @file OLED.c
+ * @brief SSD1306 128×64 OLED 显示驱动实现，I2C 通信，内置 5×7 ASCII 字模。
+ *
+ * 使用页寻址帧缓冲区（128×64/8 = 1024 字节），通过 esp_lcd 组件操作 SSD1306 控制器。
+ * 字模表覆盖数字、大写字母和少量符号，不支持中文和小写字母。
+ */
+
 #include "BSP_OLED.h"
 
 #include <stdint.h>

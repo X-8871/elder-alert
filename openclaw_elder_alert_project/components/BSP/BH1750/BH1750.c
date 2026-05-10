@@ -1,3 +1,8 @@
+/**
+ * @file BH1750.c
+ * @brief BH1750 光照度传感器 BSP 驱动实现，连续高分辨率模式，依赖共享 I2C 总线。
+ */
+
 #include "BSP_BH1750.h"
 
 #include <string.h>
