@@ -1,6 +1,7 @@
 ﻿# ESP32-S3 Elder Alert Terminal
 
-Repository workflow verified: 2026-05-10
+Repository workflow verified by author: 2026-05-10
+
 
 基于 ESP32-S3 的独居老人异常状态风险预警与主动提醒终端。
 
