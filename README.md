@@ -84,7 +84,7 @@ GPIO17 录音键
 ## 目录结构
 
 ```text
-elder_alert_project/
+./
   components/      ESP-IDF BSP 与中间层组件
   main/            ESP32-S3 固件入口
   public/          网页监控面板前端
@@ -105,7 +105,6 @@ C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe C:\Users\22061\esp\
 云端服务本地运行：
 
 ```bash
-cd elder_alert_project
 npm install
 node server.js
 ```
@@ -128,4 +127,5 @@ http://spectator0618.online/  （网页正在审核中，预计5/20号上线）
 ## 项目边界
 
 本项目不是医疗级监护设备，不替代医生、护士、护工或家属。当前核心价值是“出事后不要没人发现”：本地先提醒老人，未确认再升级告警并云端留痕，为家属和照护者提供更早的关注线索。
+
 
