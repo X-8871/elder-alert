@@ -81,7 +81,7 @@ GPIO17 录音键
 ## 目录结构
 
 ```text
-openclaw_elder_alert_project/
+elder_alert_project/
   components/      ESP-IDF BSP 与中间层组件
   main/            ESP32-S3 固件入口
   public/          网页监控面板前端
@@ -102,7 +102,7 @@ C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe C:\Users\22061\esp\
 云端服务本地运行：
 
 ```bash
-cd openclaw_elder_alert_project
+cd elder_alert_project
 npm install
 node server.js
 ```
