@@ -8,6 +8,7 @@ set(src_dirs
                 MQ2
                 AM312
                 INMP441
+                MAX98357A
                 Alert
                 OLED)
 set(include_dirs 
@@ -20,6 +21,7 @@ set(include_dirs
                 MQ2
                 AM312
                 INMP441
+                MAX98357A
                 Alert
                 OLED)
 set(requires driver esp_driver_i2s esp_adc i2cdev aht bmp280 bh1750 esp_lcd)

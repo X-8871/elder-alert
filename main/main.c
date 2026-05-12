@@ -6,6 +6,7 @@
 #include "esp_netif.h"
 
 #include "BSP_INMP441.h"
+#include "BSP_MAX98357A.h"
 #include "AppController.h"
 #include "AlertController.h"
 #include "DisplayController.h"
@@ -26,6 +27,11 @@
 #define INMP441_TEST_WS_GPIO       GPIO_NUM_13
 #define INMP441_TEST_DIN_GPIO      GPIO_NUM_14
 #define INMP441_UPLOAD_RECORD_MS   3000U
+#define ENABLE_MAX98357A_OUTPUT_TEST 0
+#define ENABLE_MAX98357A_UPLOAD_OK_PROMPT 1
+#define MAX98357A_TEST_BCLK_GPIO     GPIO_NUM_12
+#define MAX98357A_TEST_WS_GPIO       GPIO_NUM_13
+#define MAX98357A_TEST_DOUT_GPIO     GPIO_NUM_15
 
 #if ENABLE_INMP441_LEVEL_TEST
 static void run_inmp441_level_test(void)
@@ -64,16 +70,16 @@ static void run_inmp441_level_test(void)
 #if ENABLE_INMP441_UPLOAD_TEST
 static bool s_speech_upload_ready = false;
 
+static const speech_uploader_config_t s_speech_config = {
+    .bclk_gpio = INMP441_TEST_BCLK_GPIO,
+    .ws_gpio = INMP441_TEST_WS_GPIO,
+    .data_in_gpio = INMP441_TEST_DIN_GPIO,
+    .sample_rate_hz = BSP_INMP441_DEFAULT_SAMPLE_RATE_HZ,
+};
+
 static void init_inmp441_upload_test(void)
 {
-    const speech_uploader_config_t speech_config = {
-        .bclk_gpio = INMP441_TEST_BCLK_GPIO,
-        .ws_gpio = INMP441_TEST_WS_GPIO,
-        .data_in_gpio = INMP441_TEST_DIN_GPIO,
-        .sample_rate_hz = BSP_INMP441_DEFAULT_SAMPLE_RATE_HZ,
-    };
-
-    esp_err_t ret = SpeechUploader_Init(&speech_config);
+    esp_err_t ret = SpeechUploader_Init(&s_speech_config);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SpeechUploader init failed: %s", esp_err_to_name(ret));
         return;
@@ -82,6 +88,37 @@ static void init_inmp441_upload_test(void)
     s_speech_upload_ready = true;
     ESP_LOGI(TAG, "speech upload test ready, press GPIO17 record key to upload a short WAV");
 }
+
+#if ENABLE_MAX98357A_UPLOAD_OK_PROMPT
+static esp_err_t play_upload_ok_prompt(void)
+{
+    const bsp_max98357a_config_t amp_config = {
+        .bclk_gpio = MAX98357A_TEST_BCLK_GPIO,
+        .ws_gpio = MAX98357A_TEST_WS_GPIO,
+        .data_out_gpio = MAX98357A_TEST_DOUT_GPIO,
+        .sample_rate_hz = BSP_MAX98357A_DEFAULT_SAMPLE_RATE_HZ,
+    };
+
+    esp_err_t ret = BSP_MAX98357A_Init(&amp_config);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = BSP_MAX98357A_PlayTone(1200U, 120U, BSP_MAX98357A_DEFAULT_VOLUME);
+    if (ret == ESP_OK) {
+        ret = BSP_MAX98357A_PlaySilence(80U);
+    }
+    if (ret == ESP_OK) {
+        ret = BSP_MAX98357A_PlayTone(1600U, 120U, BSP_MAX98357A_DEFAULT_VOLUME);
+    }
+
+    esp_err_t deinit_ret = BSP_MAX98357A_Deinit();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    return deinit_ret;
+}
+#endif
 
 static void service_inmp441_upload_test(void)
 {
@@ -103,6 +140,65 @@ static void service_inmp441_upload_test(void)
     ret = SpeechUploader_RecordWavAndUpload(INMP441_UPLOAD_RECORD_MS);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "speech upload test failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+#if ENABLE_MAX98357A_UPLOAD_OK_PROMPT
+    ESP_LOGI(TAG, "speech upload success, switch I2S to speaker prompt");
+    s_speech_upload_ready = false;
+    ret = SpeechUploader_Deinit();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SpeechUploader deinit failed, skip speaker prompt: %s", esp_err_to_name(ret));
+        init_inmp441_upload_test();
+        return;
+    }
+
+    ret = play_upload_ok_prompt();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "upload ok prompt failed: %s", esp_err_to_name(ret));
+    }
+
+    init_inmp441_upload_test();
+#endif
+}
+#endif
+
+#if ENABLE_MAX98357A_OUTPUT_TEST
+static void run_max98357a_output_test(void)
+{
+    const bsp_max98357a_config_t amp_config = {
+        .bclk_gpio = MAX98357A_TEST_BCLK_GPIO,
+        .ws_gpio = MAX98357A_TEST_WS_GPIO,
+        .data_out_gpio = MAX98357A_TEST_DOUT_GPIO,
+        .sample_rate_hz = BSP_MAX98357A_DEFAULT_SAMPLE_RATE_HZ,
+    };
+
+    esp_err_t ret = BSP_MAX98357A_Init(&amp_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "MAX98357A init failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ESP_LOGI(TAG, "MAX98357A output test started: GPIO12=BCLK GPIO13=WS GPIO15=DIN");
+    for (int i = 0; i < 3; ++i) {
+        ret = BSP_MAX98357A_PlayTone(1000U, 250U, BSP_MAX98357A_DEFAULT_VOLUME);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "MAX98357A tone failed: %s", esp_err_to_name(ret));
+            break;
+        }
+        ret = BSP_MAX98357A_PlaySilence(150U);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "MAX98357A silence failed: %s", esp_err_to_name(ret));
+            break;
+        }
+    }
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "MAX98357A output test finished");
+    }
+
+    ret = BSP_MAX98357A_Deinit();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "MAX98357A deinit failed: %s", esp_err_to_name(ret));
     }
 }
 #endif
@@ -206,6 +302,10 @@ void app_main(void)
 #if ENABLE_INMP441_LEVEL_TEST
     run_inmp441_level_test();
     return;
+#endif
+
+#if ENABLE_MAX98357A_OUTPUT_TEST
+    run_max98357a_output_test();
 #endif
 
     /* 第 1 步：先把所有“数据输入链路”准备好，后续主循环才能拿到统一传感器快照。 */

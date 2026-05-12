@@ -94,6 +94,23 @@ esp_err_t BSP_INMP441_Init(const bsp_inmp441_config_t *config)
     return ESP_OK;
 }
 
+esp_err_t BSP_INMP441_Deinit(void)
+{
+    if (!s_initialized) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = i2s_channel_disable(s_rx_chan);
+    esp_err_t del_ret = i2s_del_channel(s_rx_chan);
+    s_rx_chan = NULL;
+    s_initialized = false;
+
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    return del_ret;
+}
+
 esp_err_t BSP_INMP441_ReadSamples(int32_t *samples, size_t sample_count, size_t *samples_read, uint32_t timeout_ms)
 {
     if (!s_initialized) {

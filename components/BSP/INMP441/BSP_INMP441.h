@@ -32,7 +32,7 @@ typedef struct {
 } bsp_inmp441_level_t;
 
 esp_err_t BSP_INMP441_Init(const bsp_inmp441_config_t *config);
+esp_err_t BSP_INMP441_Deinit(void);
 esp_err_t BSP_INMP441_ReadSamples(int32_t *samples, size_t sample_count, size_t *samples_read, uint32_t timeout_ms);
 esp_err_t BSP_INMP441_ReadLevel(bsp_inmp441_level_t *level, uint32_t timeout_ms);
 bool BSP_INMP441_IsInitialized(void);
-

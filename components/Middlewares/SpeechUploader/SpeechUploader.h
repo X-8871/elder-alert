@@ -24,4 +24,5 @@ typedef struct {
 } speech_uploader_config_t;
 
 esp_err_t SpeechUploader_Init(const speech_uploader_config_t *config);
+esp_err_t SpeechUploader_Deinit(void);
 esp_err_t SpeechUploader_RecordWavAndUpload(uint32_t record_ms);

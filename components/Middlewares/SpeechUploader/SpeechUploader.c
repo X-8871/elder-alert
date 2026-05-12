@@ -132,6 +132,20 @@ esp_err_t SpeechUploader_Init(const speech_uploader_config_t *config)
     return ESP_OK;
 }
 
+esp_err_t SpeechUploader_Deinit(void)
+{
+    if (!s_initialized) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = BSP_INMP441_Deinit();
+    if (ret == ESP_OK) {
+        s_initialized = false;
+        s_sample_rate_hz = BSP_INMP441_DEFAULT_SAMPLE_RATE_HZ;
+    }
+    return ret;
+}
+
 esp_err_t SpeechUploader_RecordWavAndUpload(uint32_t record_ms)
 {
     if (!s_initialized) {
