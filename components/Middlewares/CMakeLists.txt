@@ -28,6 +28,6 @@ set(include_dirs
         HttpAlertReporter
         RainMakerReporter)
 
-set(requires BSP esp_wifi esp_event esp_netif nvs_flash esp_http_client bt espressif__network_provisioning espressif__esp_rainmaker)
+set(requires BSP esp_wifi esp_event esp_netif nvs_flash esp_http_client bt espressif__network_provisioning espressif__esp_rainmaker lvgl)
 
 idf_component_register(SRC_DIRS ${src_dirs} INCLUDE_DIRS ${include_dirs} REQUIRES ${requires})

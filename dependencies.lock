@@ -180,7 +180,7 @@ dependencies:
       type: service
     version: 1.12.7
   espressif/esp_schedule:
-    component_hash: 024e1ee23cab447e800519f704193cb5b5652297d86811e6e6c653dea42d8bb1
+    component_hash: 52d305300abcee86034c309eb200feb2dfbc95fcbfc5b7b9dcd137763a995dbf
     dependencies:
     - name: espressif/esp_daylight
       registry_url: https://components.espressif.com
@@ -192,7 +192,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.3.2
+    version: 1.3.3
   espressif/esp_secure_cert_mgr:
     component_hash: 40a986c1f45d91eb6d339ca51dcab90c4ecce2a6622c268edaaa05887852d464
     dependencies:
@@ -289,6 +289,13 @@ dependencies:
     source:
       type: idf
     version: 5.5.2
+  lvgl/lvgl:
+    component_hash: 184e532558c1c45fefed631f3e235423d22582aafb4630f3e8885c35281a49ae
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 9.5.0
 direct_dependencies:
 - esp-idf-lib/aht
 - esp-idf-lib/bh1750
@@ -296,6 +303,7 @@ direct_dependencies:
 - espressif/esp_rainmaker
 - espressif/led_strip
 - idf
-manifest_hash: d96515a9c52eeed7c5cd6878d2035b8548f867597edf267eb07e476248610f72
+- lvgl/lvgl
+manifest_hash: 79ff712da088bb48160be301f6de7fc16edbb5a7c4dec337189fc59f9b9c27ef
 target: esp32s3
 version: 2.0.0

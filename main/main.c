@@ -555,6 +555,11 @@ void app_main(void)
                 ESP_LOGE(TAG, "AppController service failed: %s", esp_err_to_name(ret));
             }
 
+            ret = DisplayController_Service(100);
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "DisplayController service failed: %s", esp_err_to_name(ret));
+            }
+
 #if ENABLE_INMP441_UPLOAD_TEST
             service_inmp441_upload_test();
 #endif

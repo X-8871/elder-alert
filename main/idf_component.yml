@@ -20,3 +20,4 @@ dependencies:
   esp-idf-lib/aht: ^1.0.8
   esp-idf-lib/bh1750: ^1.1.7
   espressif/esp_rainmaker: ^1.12.4
+  lvgl/lvgl: ^9.1.0
