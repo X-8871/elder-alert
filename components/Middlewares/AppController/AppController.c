@@ -130,8 +130,13 @@ esp_err_t AppController_Process(const sensor_hub_data_t *sensor_data, const risk
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (!sensor_data->am312_ok || sensor_data->motion_detected) {
-        /* AM312 不可用时不把未知活动状态误当作“长时间无活动”。 */
+    bool obvious_activity = (sensor_data->am312_ok && sensor_data->motion_detected) ||
+                            (sensor_data->ld2410b_ok && sensor_data->ld2410b_moving_target);
+    bool no_person_in_mmwave_area = sensor_data->ld2410b_ok && !sensor_data->ld2410b_presence;
+    bool activity_unknown = !sensor_data->am312_ok && !sensor_data->ld2410b_ok;
+
+    if (obvious_activity || no_person_in_mmwave_area || activity_unknown) {
+        /* 有明显活动、毫米波无人或活动传感器都不可用时，都不累计“人在但静止”的风险时长。 */
         s_last_motion_tick = xTaskGetTickCount();
         s_remind_timeout_latched = false;
     }
@@ -244,7 +249,7 @@ esp_err_t AppController_Service(void)
         }
     }
 
-    /* 每次 service 都刷新一次底层提示节拍，让闪灯/蜂鸣器按模式持续运行。 */
+    /* 每次服务调用都刷新一次底层提示节拍，让闪灯/蜂鸣器按模式持续运行。 */
     return AlertController_Update();
 }
 

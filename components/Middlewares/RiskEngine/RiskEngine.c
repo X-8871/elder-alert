@@ -141,8 +141,16 @@ void RiskEngine_Evaluate(const sensor_hub_data_t *data,
     }
 
     const risk_config_t *config = get_active_config();
-    result->no_motion_timeout = data->am312_ok &&
-                                context->inactive_ms >= config->no_motion_remind_ms;
+    if (data->ld2410b_ok) {
+        result->static_presence_no_motion = data->ld2410b_presence &&
+                                            !data->ld2410b_moving_target &&
+                                            context->inactive_ms >= config->no_motion_remind_ms;
+        result->no_motion_timeout = result->static_presence_no_motion;
+    } else {
+        result->mmwave_fault_fallback = true;
+        result->no_motion_timeout = data->am312_ok &&
+                                    context->inactive_ms >= config->no_motion_remind_ms;
+    }
     result->low_light_no_motion = result->no_motion_timeout &&
                                   data->bh1750_ok &&
                                   data->lux <= config->dark_lux_threshold;
@@ -157,7 +165,7 @@ void RiskEngine_Evaluate(const sensor_hub_data_t *data,
         reset_mq2_tracking();
     }
     result->manual_sos = context->manual_sos_active;
-    result->remind_timeout = data->am312_ok && context->remind_timeout_active;
+    result->remind_timeout = context->remind_timeout_active;
 
     if (result->no_motion_timeout) {
         result->activity_score += 1;
@@ -232,8 +240,10 @@ void RiskEngine_BuildReasonString(const risk_result_t *result, char *buffer, siz
     if (result->remind_timeout) {
         append_reason(buffer, buffer_size, "本地提醒后未收到确认，已升级为报警并上报云端", &first);
     }
-    if (result->no_motion_timeout) {
-        append_reason(buffer, buffer_size, "长时间未检测到明显活动，已提醒老人确认是否安全", &first);
+    if (result->static_presence_no_motion) {
+        append_reason(buffer, buffer_size, "检测到有人存在但长时间没有明显活动，已提醒老人确认是否安全", &first);
+    } else if (result->no_motion_timeout) {
+        append_reason(buffer, buffer_size, "毫米波人体存在模块数据无效，系统已回退到活动传感器判断：长时间未检测到明显活动，已提醒老人确认是否安全", &first);
     }
     if (result->low_light_no_motion) {
         append_reason(buffer, buffer_size, "长时间无活动且光线较暗，已提醒老人确认安全", &first);

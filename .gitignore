@@ -18,6 +18,7 @@
 
 # Local dashboard runtime data
 data/alerts-store.json
+node_modules/
 
 # Build artifacts and directories
 **/build/

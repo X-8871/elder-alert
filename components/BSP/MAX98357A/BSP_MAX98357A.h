@@ -2,7 +2,7 @@
  * @file BSP_MAX98357A.h
  * @brief MAX98357A I2S 数字功放 BSP 驱动封装。
  *
- * 当前用于功放 bring-up：初始化 I2S TX，并输出最小 PCM 测试音。
+ * 当前用于功放联调：初始化 I2S 发送通道，并输出最小 PCM 测试音。
  */
 
 #pragma once
@@ -20,9 +20,10 @@
 #define BSP_MAX98357A_DEFAULT_VOLUME         6000
 
 typedef struct {
-    gpio_num_t bclk_gpio;      /* MAX98357A BCLK */
-    gpio_num_t ws_gpio;        /* MAX98357A LRC / WS */
-    gpio_num_t data_out_gpio;  /* MAX98357A DIN */
+    gpio_num_t bclk_gpio;      /* MAX98357A 位时钟 BCLK */
+    gpio_num_t ws_gpio;        /* MAX98357A 左右声道时钟 LRC / WS */
+    gpio_num_t data_out_gpio;  /* MAX98357A 数据输入 DIN */
+    gpio_num_t sd_gpio;        /* MAX98357A SD 关断引脚，-1 表示未连接 */
     uint32_t sample_rate_hz;
 } bsp_max98357a_config_t;
 

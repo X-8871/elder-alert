@@ -2,7 +2,7 @@
  * @file BSP_INMP441.h
  * @brief INMP441 I2S 数字麦克风 BSP 驱动封装。
  *
- * 当前用于麦克风 bring-up：初始化 I2S RX、读取原始采样，并计算一帧音量指标。
+ * 当前用于麦克风联调：初始化 I2S 接收通道、读取原始采样，并计算一帧音量指标。
  */
 
 #pragma once
@@ -19,9 +19,9 @@
 #define BSP_INMP441_DEFAULT_DMA_DESC_NUM   4U
 
 typedef struct {
-    gpio_num_t bclk_gpio;       /* INMP441 SCK / I2S BCLK */
-    gpio_num_t ws_gpio;         /* INMP441 WS / I2S LRCLK */
-    gpio_num_t data_in_gpio;    /* INMP441 SD / I2S data out to ESP32 input */
+    gpio_num_t bclk_gpio;       /* INMP441 SCK / I2S 位时钟 BCLK */
+    gpio_num_t ws_gpio;         /* INMP441 WS / I2S 左右声道时钟 LRCLK */
+    gpio_num_t data_in_gpio;    /* INMP441 SD / I2S 数据输出，接 ESP32 输入 */
     uint32_t sample_rate_hz;
 } bsp_inmp441_config_t;
 

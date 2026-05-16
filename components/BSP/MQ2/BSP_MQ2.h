@@ -2,7 +2,7 @@
  * @file BSP_MQ2.h
  * @brief MQ2 烟雾/可燃气体传感器驱动封装，通过 ADC 采集模拟信号。
  *
- * 支持 ADC 校准（curve fitting 或 line fitting），校准可用时输出 mV 电压。
+ * 支持 ADC 校准（曲线拟合或线性拟合），校准可用时输出 mV 电压。
  */
 
 #pragma once

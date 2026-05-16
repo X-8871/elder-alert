@@ -14,7 +14,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 
-#define SPEECH_UPLOADER_URL "http://118.25.94.68:3000/api/speech/transcribe"
+#define SPEECH_UPLOADER_URL "http://spectator0618.online:3000/api/speech/transcribe"
 #define SPEECH_UPLOADER_DEVICE_TOKEN ""
 #define SPEECH_UPLOADER_TIMEOUT_MS 10000
 #define SPEECH_UPLOADER_WAV_HEADER_BYTES 44U

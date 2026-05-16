@@ -1,6 +1,6 @@
 /**
  * @file SpeechUploader.h
- * @brief INMP441 短录音上传到云端 ASR 的最小 bring-up 工具。
+ * @brief INMP441 短录音上传到云端 ASR 的最小联调工具。
  *
  * 默认不接入业务状态机；仅在 main 中打开测试宏时使用，避免改变现有按键和报警语义。
  */

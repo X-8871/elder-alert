@@ -9,10 +9,33 @@ const alertPath = "/api/alert";
 const latestPath = "/api/latest";
 const speechTranscribePath = "/api/speech/transcribe";
 const speechLatestPath = "/api/speech/latest";
+const speechReplyAudioPath = "/api/speech/reply-audio";
 const maxAlerts = 50;
 const maxSpeechRecords = 10;
 const maxSpeechAudioBytes = 600 * 1024;
+const dashboardUser = "olderalert";
+const dashboardPassword = "88888888";
+const dashboardSessions = new Set();
+const manualVoiceModes = new Set(["CARE", "INTERACT"]);
+const offlineVoiceReply = "已接收到信息。如有紧急情况，请按红色按钮。网络暂不可用。";
+let currentVoiceMode = "CARE";
+const deviceOfflineAfterMs = Number(process.env.ELDER_DEVICE_OFFLINE_AFTER_MS || 45000);
+const speechTranscribeInlineAiWaitMs = Number(process.env.ELDER_SPEECH_INLINE_AI_WAIT_MS || 1000);
 const deviceToken = (process.env.ELDER_ALERT_TOKEN || "").trim();
+const aiReplyConfig = {
+  apiKey: (process.env.ELDER_AI_API_KEY || "").trim(),
+  baseUrl: (process.env.ELDER_AI_BASE_URL || "https://api.openai.com/v1").trim().replace(/\/+$/, ""),
+  model: (process.env.ELDER_AI_MODEL || "").trim(),
+  timeoutMs: Number(process.env.ELDER_AI_TIMEOUT_MS || 12000),
+};
+const ttsConfig = {
+  apiKey: (process.env.ELDER_TTS_API_KEY || process.env.ELDER_AI_API_KEY || "").trim(),
+  baseUrl: (process.env.ELDER_TTS_BASE_URL || process.env.ELDER_AI_BASE_URL || "").trim().replace(/\/+$/, ""),
+  model: (process.env.ELDER_TTS_MODEL || "").trim(),
+  voice: (process.env.ELDER_TTS_VOICE || "mimo_default").trim(),
+  format: (process.env.ELDER_TTS_FORMAT || "wav").trim().toLowerCase(),
+  timeoutMs: Number(process.env.ELDER_TTS_TIMEOUT_MS || 20000),
+};
 const tencentAsrConfig = {
   secretId: (process.env.TENCENTCLOUD_SECRET_ID || "").trim(),
   secretKey: (process.env.TENCENTCLOUD_SECRET_KEY || "").trim(),
@@ -65,8 +88,353 @@ function tokenMatches(providedToken, expectedToken) {
   return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
 }
 
+function parseCookies(req) {
+  const header = req.headers.cookie || "";
+  const cookies = {};
+  for (const part of header.split(";")) {
+    const index = part.indexOf("=");
+    if (index <= 0) {
+      continue;
+    }
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    cookies[key] = decodeURIComponent(value);
+  }
+  return cookies;
+}
+
+function safeStringEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""));
+  const rightBuffer = Buffer.from(String(right || ""));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function createDashboardSession() {
+  const token = crypto.randomBytes(32).toString("hex");
+  dashboardSessions.add(token);
+  return token;
+}
+
+function getDashboardSession(req) {
+  const token = parseCookies(req).elder_alert_session;
+  return dashboardSessions.has(token) ? token : null;
+}
+
+function setDashboardSessionCookie(res, token) {
+  res.setHeader(
+    "Set-Cookie",
+    `elder_alert_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200`
+  );
+}
+
+function clearDashboardSessionCookie(res) {
+  res.setHeader("Set-Cookie", "elder_alert_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+}
+
+function requireDashboardAuth(req, res, next) {
+  if (getDashboardSession(req)) {
+    return next();
+  }
+
+  if (req.path.startsWith("/api/")) {
+    return res.status(401).json({ ok: false, message: "未登录" });
+  }
+  if (req.accepts("html")) {
+    return res.redirect("/login.html");
+  }
+  return res.status(401).json({ ok: false, message: "未登录" });
+}
+
+function requireDashboardOrDeviceToken(req, res, next) {
+  if (getDashboardSession(req)) {
+    return next();
+  }
+  if (!deviceToken) {
+    return next();
+  }
+  if (tokenMatches(req.get("X-Device-Token"), deviceToken)) {
+    return next();
+  }
+  return res.status(401).json({ ok: false, message: "unauthorized" });
+}
+
 function hasTencentAsrConfig() {
   return Boolean(tencentAsrConfig.secretId && tencentAsrConfig.secretKey);
+}
+
+function hasAiReplyConfig() {
+  return Boolean(aiReplyConfig.apiKey && aiReplyConfig.baseUrl && aiReplyConfig.model);
+}
+
+function hasTtsConfig() {
+  return Boolean(ttsConfig.apiKey && ttsConfig.baseUrl && ttsConfig.model);
+}
+
+function normalizeManualVoiceMode(value) {
+  const mode = String(value || "").trim().toUpperCase();
+  return manualVoiceModes.has(mode) ? mode : "CARE";
+}
+
+function normalizeVoiceMode(value) {
+  const mode = String(value || "").trim().toUpperCase();
+  return mode === "OFFLINE" || manualVoiceModes.has(mode) ? mode : "CARE";
+}
+
+function isDeviceOffline() {
+  if (!latestSnapshot?.received_at) {
+    return true;
+  }
+  const receivedAt = new Date(latestSnapshot.received_at);
+  if (Number.isNaN(receivedAt.getTime())) {
+    return true;
+  }
+  const offlineAfterMs = Number.isFinite(deviceOfflineAfterMs) && deviceOfflineAfterMs > 0
+    ? deviceOfflineAfterMs
+    : 45000;
+  return Date.now() - receivedAt.getTime() >= offlineAfterMs;
+}
+
+function getEffectiveVoiceMode() {
+  return isDeviceOffline() ? "OFFLINE" : currentVoiceMode;
+}
+
+function voiceModeLabel(mode) {
+  switch (normalizeVoiceMode(mode)) {
+    case "OFFLINE":
+      return "离线模式";
+    case "INTERACT":
+      return "互动模式";
+    case "CARE":
+    default:
+      return "看护模式";
+  }
+}
+
+function getLatestDeviceContext() {
+  if (!latestSnapshot) {
+    return "当前没有设备状态快照。";
+  }
+
+  return [
+    `设备状态: ${latestSnapshot.state ?? "-"}`,
+    `风险等级: ${latestSnapshot.risk_level ?? "-"}`,
+    `原因: ${latestSnapshot.reason ?? "-"}`,
+    `温度: ${latestSnapshot.temperature ?? "-"}C`,
+    `湿度: ${latestSnapshot.humidity ?? "-"}%`,
+    `光照: ${latestSnapshot.lux ?? "-"}lx`,
+    `MQ2: ${latestSnapshot.mq2_raw ?? "-"}`,
+    `人体活动: ${latestSnapshot.motion_detected ?? "-"}`,
+    `毫米波有效: ${latestSnapshot.ld2410b_ok ?? "-"}`,
+    `毫米波存在: ${latestSnapshot.ld2410b_presence ?? "-"}`,
+    `毫米波运动: ${latestSnapshot.ld2410b_moving_target ?? "-"}`,
+    `毫米波静止: ${latestSnapshot.ld2410b_stationary_target ?? "-"}`,
+    `毫米波距离: ${latestSnapshot.ld2410b_detection_distance_cm ?? "-"}cm`,
+  ].join("\n");
+}
+
+function sanitizeAiReply(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+function isPromptEchoReply(value) {
+  const text = String(value || "");
+  return /用户说|关键指令|设备状态|风险等级|最多\d+个汉字|直接朗读|不要复述|不要解释|首先/.test(text);
+}
+
+function buildFallbackAiReply(transcript, mode = currentVoiceMode) {
+  const text = String(transcript || "");
+  const normalizedMode = normalizeVoiceMode(mode);
+  if (/几点|时间|现在.*点/.test(text)) {
+    const time = new Intl.DateTimeFormat("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date());
+    return `现在是${time}。`;
+  }
+  if (/救命|不舒服|难受|疼|摔|晕|危险|报警/.test(text)) {
+    return "请马上按SOS键或联系家属。";
+  }
+  if (/吃药|药|用药|剂量|病|医生|血压|血糖/.test(text)) {
+    return "这个我不能判断，请咨询医生或家属。";
+  }
+  if (normalizedMode === "CARE" && /天气|新闻|外面|路线|导航|电话|微信|支付/.test(text)) {
+    return "这个功能我暂时不会。";
+  }
+  if (/听到|听见|听清|能听/.test(text)) {
+    return "听见了，您可以继续说。";
+  }
+  if (/干嘛|在吗|你好|喂/.test(text)) {
+    return "我在帮您留意家里安全。";
+  }
+  if (normalizedMode === "INTERACT") {
+    return "嗯，我在听，您可以继续说。";
+  }
+  return "这个我暂时不会，请换个问题。";
+}
+
+function buildAiSystemPrompt(mode) {
+  const normalizedMode = normalizeVoiceMode(mode);
+  if (normalizedMode === "OFFLINE") {
+    return "";
+  }
+  if (normalizedMode === "INTERACT") {
+    return (
+      "你是独居老人家里的自然对话语音助手。回答要像正常聊天，简短、亲切、有上下文感，最多60个汉字。" +
+      "可以陪聊、问候、解释简单问题，也可以结合设备状态做温和提醒。" +
+      "不要假装已经打电话、发消息、控制设备或通知家属。" +
+      "医疗、用药、诊断问题要建议咨询医生或家属。" +
+      "危险、求救、不舒服或紧急情况，要提醒按红色SOS按钮或联系家属。"
+    );
+  }
+
+  return (
+    "你是独居老人家里的安全看护语音助手。直接回答老人问题，最多40个汉字。" +
+    "优先关注安全、风险解释、确认键和SOS求助。" +
+    "不要反复说我听到了，不要复述用户原话，不要列设备状态，不要输出分析过程。" +
+    "医疗、用药、诊断问题要建议咨询医生或家属。" +
+    "危险、求救、不舒服或紧急情况，要提醒按SOS键或联系家属。"
+  );
+}
+
+function extractAiReply(data) {
+  const choices = Array.isArray(data?.choices) ? data.choices : [];
+
+  for (const choice of choices) {
+    const message = choice?.message || choice?.delta || {};
+    const candidates = [
+      message.content,
+      choice.text,
+      choice.content,
+    ];
+
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) {
+        const text = candidate
+          .map((part) => part?.text || part?.content || "")
+          .join(" ");
+        const reply = sanitizeAiReply(text);
+        if (reply && !isPromptEchoReply(reply)) {
+          return reply;
+        }
+      } else {
+        const reply = sanitizeAiReply(candidate);
+        if (reply && !isPromptEchoReply(reply)) {
+          return reply;
+        }
+      }
+    }
+  }
+
+  return "";
+}
+
+function mimeTypeForAudioFormat(format) {
+  switch (String(format || "").toLowerCase()) {
+    case "mp3":
+      return "audio/mpeg";
+    case "pcm":
+      return "application/octet-stream";
+    case "wav":
+    default:
+      return "audio/wav";
+  }
+}
+
+function extractTtsAudio(data) {
+  function decodeAudioCandidate(candidate) {
+    if (typeof candidate === "string") {
+      const value = candidate.trim();
+      if (!value) {
+        return null;
+      }
+      const base64 = value.startsWith("data:")
+        ? value.slice(value.indexOf(",") + 1)
+        : value;
+      if (base64.length < 64 || !/^[A-Za-z0-9+/=\s]+$/.test(base64)) {
+        return null;
+      }
+      const buffer = Buffer.from(base64, "base64");
+      return buffer.length > 0 ? buffer : null;
+    }
+
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) {
+        const buffer = decodeAudioCandidate(item);
+        if (buffer) {
+          return buffer;
+        }
+      }
+      return null;
+    }
+
+    if (candidate && typeof candidate === "object") {
+      const keys = ["data", "b64_json", "base64", "audio"];
+      for (const key of keys) {
+        const buffer = decodeAudioCandidate(candidate[key]);
+        if (buffer) {
+          return buffer;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  const topLevelCandidates = [
+    data?.audio?.data,
+    data?.audio,
+    data?.output_audio,
+  ];
+  for (const candidate of topLevelCandidates) {
+    const buffer = decodeAudioCandidate(candidate);
+    if (buffer) {
+      return buffer;
+    }
+  }
+
+  const choices = Array.isArray(data?.choices) ? data.choices : [];
+
+  for (const choice of choices) {
+    const message = choice?.message || {};
+    const candidates = [
+      message.audio?.data,
+      message.audio,
+      choice.audio?.data,
+      choice.audio,
+      message.content,
+    ];
+
+    for (const candidate of candidates) {
+      const buffer = decodeAudioCandidate(candidate);
+      if (buffer) {
+        return buffer;
+      }
+    }
+  }
+
+  return null;
+}
+
+function describeError(error) {
+  const parts = [error?.message || String(error)];
+  if (error?.code) {
+    parts.push(`code=${error.code}`);
+  }
+  if (error?.cause) {
+    parts.push(`cause=${error.cause.message || String(error.cause)}`);
+    if (error.cause.code) {
+      parts.push(`cause_code=${error.cause.code}`);
+    }
+    if (error.cause.errno) {
+      parts.push(`cause_errno=${error.cause.errno}`);
+    }
+  }
+  return parts.join(" ");
 }
 
 function sha256Hex(value) {
@@ -168,6 +536,189 @@ async function transcribeWithTencentAsr(audioBuffer, voiceFormat) {
   return apiResponse;
 }
 
+async function generateAiReply(transcript, mode = currentVoiceMode) {
+  const normalizedMode = normalizeVoiceMode(mode);
+  const text = String(transcript || "").trim();
+  if (!text && normalizedMode !== "OFFLINE") {
+    return null;
+  }
+
+  if (normalizedMode === "OFFLINE") {
+    return offlineVoiceReply;
+  }
+
+  if (!hasAiReplyConfig()) {
+    return null;
+  }
+
+  if (typeof fetch !== "function") {
+    const error = new Error("Node.js fetch API is unavailable; use Node.js 18 or newer");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number.isFinite(aiReplyConfig.timeoutMs) ? aiReplyConfig.timeoutMs : 12000);
+  const payload = {
+    model: aiReplyConfig.model,
+    messages: [
+      {
+        role: "system",
+        content: buildAiSystemPrompt(normalizedMode),
+      },
+      {
+        role: "user",
+        content:
+          `老人刚说：${text}\n` +
+          `设备状态仅供你内部判断，不要复述：\n${getLatestDeviceContext()}\n` +
+          "请给出一句自然、有用的回复。",
+      },
+    ],
+    temperature: 0.5,
+    max_tokens: 90,
+  };
+
+  try {
+    const response = await fetch(`${aiReplyConfig.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${aiReplyConfig.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      const message = data?.error?.message || response.statusText || "AI reply request failed";
+      const error = new Error(message);
+      error.statusCode = response.status;
+      throw error;
+    }
+
+    const reply = extractAiReply(data);
+    return reply || buildFallbackAiReply(text, normalizedMode);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function runAiReplyGeneration(record, transcript) {
+  const mode = normalizeVoiceMode(record.voice_mode);
+  if (mode !== "OFFLINE" && (!hasAiReplyConfig() || !String(transcript || "").trim())) {
+    return false;
+  }
+
+  try {
+    const reply = await generateAiReply(transcript, mode);
+    record.ai_reply = reply;
+    record.ai_error = null;
+    saveStore();
+    console.log(`[speech-ai] reply generated mode=${mode} model=${record.ai_model || "offline"} reply=${reply || ""}`);
+    return Boolean(reply);
+  } catch (error) {
+    record.ai_error = error.message;
+    saveStore();
+    console.warn(`[speech-ai] reply failed: ${error.message}`);
+    return false;
+  }
+}
+
+function waitForBoolean(promise, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return Promise.resolve(false);
+  }
+
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+  ]);
+}
+
+async function generateReplyAudio(text) {
+  if (!hasTtsConfig()) {
+    const error = new Error("TTS model is not configured");
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const cleanText = sanitizeAiReply(text);
+  if (!cleanText) {
+    const error = new Error("TTS text is empty");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (typeof fetch !== "function") {
+    const error = new Error("Node.js fetch API is unavailable; use Node.js 18 or newer");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number.isFinite(ttsConfig.timeoutMs) ? ttsConfig.timeoutMs : 20000);
+  const payload = {
+    model: ttsConfig.model,
+    messages: [
+      {
+        role: "assistant",
+        content: cleanText,
+      },
+    ],
+    modalities: ["audio"],
+    audio: {
+      voice: ttsConfig.voice,
+      format: ttsConfig.format,
+    },
+  };
+
+  try {
+    const response = await fetch(`${ttsConfig.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${ttsConfig.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      const providerMessage =
+        data?.error?.message ||
+        data?.message ||
+        data?.Message ||
+        data?.msg ||
+        response.statusText ||
+        "TTS request failed";
+      const message = `${providerMessage}${data ? ` body=${JSON.stringify(data).slice(0, 500)}` : ""}`;
+      const error = new Error(message);
+      error.statusCode = response.status;
+      throw error;
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    let audioBuffer = Buffer.from(await response.arrayBuffer());
+    const responseText = audioBuffer.toString("utf8");
+    const looksLikeJson = /^[\s]*[\[{]/.test(responseText);
+    if (contentType.includes("application/json") || looksLikeJson) {
+      const data = JSON.parse(responseText);
+      audioBuffer = extractTtsAudio(data);
+    }
+    if (!audioBuffer || audioBuffer.length === 0) {
+      const error = new Error("TTS audio was empty");
+      error.statusCode = 502;
+      throw error;
+    }
+
+    return audioBuffer;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function requireDeviceToken(req, res, next) {
   if (!deviceToken) {
     return next();
@@ -234,9 +785,94 @@ function saveStore() {
 }
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
 
-app.get("/api/status", (req, res) => {
+app.get("/login", (req, res) => {
+  res.redirect("/login.html");
+});
+
+app.get("/login.html", (req, res) => {
+  if (getDashboardSession(req)) {
+    return res.redirect("/");
+  }
+  return res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+
+app.get("/login.css", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "login.css"));
+});
+
+app.post("/api/login", (req, res) => {
+  const username = String(req.body?.username || "");
+  const password = String(req.body?.password || "");
+  if (!safeStringEqual(username, dashboardUser) || !safeStringEqual(password, dashboardPassword)) {
+    return res.status(401).json({ ok: false, message: "账号或密码错误" });
+  }
+
+  const token = createDashboardSession();
+  setDashboardSessionCookie(res, token);
+  return res.json({ ok: true });
+});
+
+app.post("/api/logout", (req, res) => {
+  const token = getDashboardSession(req);
+  if (token) {
+    dashboardSessions.delete(token);
+  }
+  clearDashboardSessionCookie(res);
+  return res.json({ ok: true });
+});
+
+app.get("/api/session", (req, res) => {
+  res.json({ ok: true, authenticated: Boolean(getDashboardSession(req)) });
+});
+
+app.get("/api/voice-mode", requireDashboardAuth, (req, res) => {
+  const effectiveVoiceMode = getEffectiveVoiceMode();
+  res.json({
+    ok: true,
+    mode: effectiveVoiceMode,
+    label: voiceModeLabel(effectiveVoiceMode),
+    selectedMode: currentVoiceMode,
+    selectedLabel: voiceModeLabel(currentVoiceMode),
+    deviceOffline: effectiveVoiceMode === "OFFLINE",
+    offlineReply: offlineVoiceReply,
+  });
+});
+
+app.post("/api/voice-mode", requireDashboardAuth, (req, res) => {
+  currentVoiceMode = normalizeManualVoiceMode(req.body?.mode);
+  const effectiveVoiceMode = getEffectiveVoiceMode();
+  res.json({
+    ok: true,
+    mode: effectiveVoiceMode,
+    label: voiceModeLabel(effectiveVoiceMode),
+    selectedMode: currentVoiceMode,
+    selectedLabel: voiceModeLabel(currentVoiceMode),
+    deviceOffline: effectiveVoiceMode === "OFFLINE",
+    offlineReply: offlineVoiceReply,
+  });
+});
+
+app.get("/", requireDashboardAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.get("/index.html", requireDashboardAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.get("/app.js", requireDashboardAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "app.js"));
+});
+
+app.get("/styles.css", requireDashboardAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "styles.css"));
+});
+
+app.use(express.static(path.join(__dirname, "public"), { index: false }));
+
+app.get("/api/status", requireDashboardAuth, (req, res) => {
+  const effectiveVoiceMode = getEffectiveVoiceMode();
   res.json({
     ok: true,
     service: "elder-alert-dashboard",
@@ -244,8 +880,20 @@ app.get("/api/status", (req, res) => {
     latestPath,
     speechTranscribePath,
     speechLatestPath,
+    speechReplyAudioPath,
     speechAsrConfigured: hasTencentAsrConfig(),
     speechAsrEngine: tencentAsrConfig.engine || "16k_zh",
+    aiReplyConfigured: hasAiReplyConfig(),
+    aiReplyModel: aiReplyConfig.model || null,
+    ttsConfigured: hasTtsConfig(),
+    ttsModel: ttsConfig.model || null,
+    ttsFormat: ttsConfig.format || null,
+    voiceMode: effectiveVoiceMode,
+    voiceModeLabel: voiceModeLabel(effectiveVoiceMode),
+    selectedVoiceMode: currentVoiceMode,
+    selectedVoiceModeLabel: voiceModeLabel(currentVoiceMode),
+    deviceOffline: effectiveVoiceMode === "OFFLINE",
+    offlineVoiceReply,
     totalAlerts: alerts.length,
     totalSpeechRecords: speechRecords.length,
     lastReceivedAt: latestSnapshot ? latestSnapshot.received_at : null,
@@ -253,14 +901,14 @@ app.get("/api/status", (req, res) => {
   });
 });
 
-app.get(latestPath, (req, res) => {
+app.get(latestPath, requireDashboardAuth, (req, res) => {
   res.json({
     ok: true,
     latest: latestSnapshot,
   });
 });
 
-app.get("/api/alerts", (req, res) => {
+app.get("/api/alerts", requireDashboardAuth, (req, res) => {
   res.json({
     ok: true,
     count: alerts.length,
@@ -268,12 +916,40 @@ app.get("/api/alerts", (req, res) => {
   });
 });
 
-app.get(speechLatestPath, (req, res) => {
+app.get(speechLatestPath, requireDashboardAuth, (req, res) => {
   res.json({
     ok: true,
     latest: latestSpeech,
     records: speechRecords,
   });
+});
+
+app.get(speechReplyAudioPath, requireDashboardOrDeviceToken, async (req, res) => {
+  try {
+    const text = latestSpeech?.ai_reply;
+    if (!text) {
+      return res.status(404).json({
+        ok: false,
+        message: "latest AI reply is not available",
+      });
+    }
+
+    const audioBuffer = await generateReplyAudio(text);
+    res.set({
+      "Content-Type": mimeTypeForAudioFormat(ttsConfig.format),
+      "Content-Length": audioBuffer.length,
+      "Cache-Control": "no-store",
+      "X-TTS-Model": ttsConfig.model,
+      "X-TTS-Format": ttsConfig.format,
+    });
+    return res.status(200).send(audioBuffer);
+  } catch (error) {
+    console.warn(`[speech-tts] failed: ${describeError(error)}`);
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: describeError(error),
+    });
+  }
 });
 
 app.post(alertPath, requireDeviceToken, (req, res) => {
@@ -330,12 +1006,19 @@ app.post(
 
       const voiceFormat = normalizeVoiceFormat(req.get("X-Audio-Format") || req.query.format);
       const asrResponse = await transcribeWithTencentAsr(req.body, voiceFormat);
+      const transcript = asrResponse.Result || "";
+      const effectiveVoiceMode = getEffectiveVoiceMode();
       const record = {
-        result: asrResponse.Result || "",
+        result: transcript,
         audio_duration_ms: asrResponse.AudioDuration ?? null,
         word_size: asrResponse.WordSize ?? null,
         voice_format: voiceFormat,
         engine: tencentAsrConfig.engine || "16k_zh",
+        voice_mode: effectiveVoiceMode,
+        voice_mode_label: voiceModeLabel(effectiveVoiceMode),
+        ai_reply: null,
+        ai_model: effectiveVoiceMode === "OFFLINE" ? null : hasAiReplyConfig() ? aiReplyConfig.model : null,
+        ai_error: null,
         bytes: req.body.length,
         request_id: asrResponse.RequestId || null,
         received_at: new Date().toISOString(),
@@ -347,14 +1030,20 @@ app.post(
         speechRecords.length = maxSpeechRecords;
       }
       saveStore();
+      const aiWaitMs = Number.isFinite(speechTranscribeInlineAiWaitMs)
+        ? speechTranscribeInlineAiWaitMs
+        : 1000;
+      const aiReplyTask = runAiReplyGeneration(record, transcript);
+      const replyReady = await waitForBoolean(aiReplyTask, aiWaitMs);
 
       console.log(
-        `[speech] format=${record.voice_format} bytes=${record.bytes} duration_ms=${record.audio_duration_ms} result=${record.result}`
+        `[speech] format=${record.voice_format} bytes=${record.bytes} duration_ms=${record.audio_duration_ms} result=${record.result} reply_ready=${replyReady ? "true" : "false"}`
       );
 
       return res.status(200).json({
         ok: true,
         speech: record,
+        reply_ready: Boolean(replyReady),
       });
     } catch (error) {
       console.warn(`[speech] transcribe failed: ${error.message}`);
@@ -376,4 +1065,7 @@ app.listen(port, () => {
   console.log(`[store] using ${storePath}`);
   console.log(`[auth] device token ${deviceToken ? "enabled" : "disabled"}`);
   console.log(`[speech] Tencent ASR ${hasTencentAsrConfig() ? "configured" : "not configured"}`);
+  console.log(`[speech] inline AI wait ${Number.isFinite(speechTranscribeInlineAiWaitMs) ? speechTranscribeInlineAiWaitMs : 1000}ms`);
+  console.log(`[speech-ai] reply model ${hasAiReplyConfig() ? aiReplyConfig.model : "not configured"}`);
+  console.log(`[speech-tts] model ${hasTtsConfig() ? ttsConfig.model : "not configured"}`);
 });

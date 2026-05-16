@@ -3,8 +3,8 @@
  * @brief HTTP 告警上报器实现，通过 POST JSON 向云端推送事件和遥测数据。
  *
  * 上报触发条件：
- *   - EVENT：应用状态变化、风险原因变化、SOS 新触发
- *   - TELEMETRY：距上次上报超过 10 秒
+ *   - 事件模式（EVENT）：应用状态变化、风险原因变化、SOS 新触发
+ *   - 遥测模式（TELEMETRY）：距上次上报超过 10 秒
  * 不会因上报失败而阻塞主流程，失败仅记日志。
  */
 
@@ -21,14 +21,14 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 
-#define HTTP_ALERT_REPORTER_URL "http://118.25.94.68:3000/api/alert"
+#define HTTP_ALERT_REPORTER_URL "http://spectator0618.online:3000/api/alert"
 #define HTTP_ALERT_REPORTER_DEVICE_TOKEN ""
 #define HTTP_ALERT_REPORTER_TIMEOUT_MS 3000
 #define HTTP_ALERT_REPORTER_TELEMETRY_INTERVAL_MS 10000U
 #define HTTP_ALERT_REPORTER_MAX_REASON_LEN 192
 #define HTTP_ALERT_REPORTER_MAX_ESCAPED_REASON_LEN 384
 #define HTTP_ALERT_REPORTER_MAX_DEVICE_ID_LEN 18
-#define HTTP_ALERT_REPORTER_REQUEST_BUFFER_LEN 768
+#define HTTP_ALERT_REPORTER_REQUEST_BUFFER_LEN 1536
 
 static const char *TAG = "HttpAlertReporter";
 
@@ -167,6 +167,18 @@ static bool json_escape_string(const char *input, char *output, size_t output_si
     return true;
 }
 
+static const char *run_mode_string(void)
+{
+    return RISK_ENGINE_RUN_MODE == RISK_RUN_MODE_REAL ? "REAL" : "DEMO";
+}
+
+static uint32_t remind_confirm_timeout_ms(void)
+{
+    return RISK_ENGINE_RUN_MODE == RISK_RUN_MODE_REAL
+               ? APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_REAL
+               : APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_DEMO;
+}
+
 static report_mode_t get_report_mode(app_state_t state,
                                      const char *reason,
                                      uint32_t sos_trigger_count,
@@ -294,7 +306,20 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
         sizeof(request_body),
         "{\"device_id\":\"%s\",\"state\":\"%s\",\"risk_level\":\"%s\","
         "\"reason\":\"%s\",\"temperature\":%.1f,\"humidity\":%.1f,"
-        "\"lux\":%u,\"mq2_raw\":%d,\"motion_detected\":%s,\"timestamp_ms\":%" PRIu32 "}",
+        "\"lux\":%u,\"mq2_raw\":%d,\"motion_detected\":%s,"
+        "\"sensor_aht20_ok\":%s,\"sensor_bmp280_ok\":%s,"
+        "\"sensor_bh1750_ok\":%s,\"sensor_mq2_ok\":%s,\"sensor_am312_ok\":%s,"
+        "\"ld2410b_ok\":%s,\"ld2410b_presence\":%s,"
+        "\"ld2410b_moving_target\":%s,\"ld2410b_stationary_target\":%s,"
+        "\"ld2410b_moving_distance_cm\":%u,\"ld2410b_stationary_distance_cm\":%u,"
+        "\"ld2410b_detection_distance_cm\":%u,"
+        "\"ld2410b_moving_energy\":%u,\"ld2410b_stationary_energy\":%u,"
+        "\"mmwave_fusion_active\":%s,\"am312_fallback_active\":%s,"
+        "\"run_mode\":\"%s\",\"no_motion_remind_ms\":%u,"
+        "\"remind_confirm_timeout_ms\":%u,"
+        "\"remind_confirm_timeout_demo_ms\":%u,"
+        "\"remind_confirm_timeout_real_ms\":%u,"
+        "\"timestamp_ms\":%" PRIu32 "}",
         s_device_id,
         AppController_StateToString(state),
         RiskEngine_LevelToString(risk_result->level),
@@ -304,6 +329,27 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
         (unsigned int)sensor_data->lux,
         sensor_data->mq2_raw,
         sensor_data->motion_detected ? "true" : "false",
+        sensor_data->aht20_ok ? "true" : "false",
+        sensor_data->bmp280_ok ? "true" : "false",
+        sensor_data->bh1750_ok ? "true" : "false",
+        sensor_data->mq2_ok ? "true" : "false",
+        sensor_data->am312_ok ? "true" : "false",
+        sensor_data->ld2410b_ok ? "true" : "false",
+        sensor_data->ld2410b_presence ? "true" : "false",
+        sensor_data->ld2410b_moving_target ? "true" : "false",
+        sensor_data->ld2410b_stationary_target ? "true" : "false",
+        (unsigned int)sensor_data->ld2410b_moving_distance_cm,
+        (unsigned int)sensor_data->ld2410b_stationary_distance_cm,
+        (unsigned int)sensor_data->ld2410b_detection_distance_cm,
+        (unsigned int)sensor_data->ld2410b_moving_energy,
+        (unsigned int)sensor_data->ld2410b_stationary_energy,
+        sensor_data->ld2410b_ok ? "true" : "false",
+        risk_result->mmwave_fault_fallback ? "true" : "false",
+        run_mode_string(),
+        (unsigned int)RISK_ENGINE_NO_MOTION_REMIND_MS,
+        (unsigned int)remind_confirm_timeout_ms(),
+        (unsigned int)APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_DEMO,
+        (unsigned int)APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_REAL,
         now_ms);
     if (written < 0 || written >= (int)sizeof(request_body)) {
         ESP_LOGW(TAG, "request body truncated, skip report");

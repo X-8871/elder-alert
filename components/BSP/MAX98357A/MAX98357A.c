@@ -15,6 +15,7 @@ static const char *TAG = "BSP_MAX98357A";
 static i2s_chan_handle_t s_tx_chan = NULL;
 static bool s_initialized = false;
 static uint32_t s_sample_rate_hz = BSP_MAX98357A_DEFAULT_SAMPLE_RATE_HZ;
+static gpio_num_t s_sd_gpio = -1;
 
 bool BSP_MAX98357A_IsInitialized(void)
 {
@@ -76,11 +77,20 @@ esp_err_t BSP_MAX98357A_Init(const bsp_max98357a_config_t *config)
 
     s_sample_rate_hz = config->sample_rate_hz;
     s_initialized = true;
+
+    if (config->sd_gpio >= 0) {
+        s_sd_gpio = config->sd_gpio;
+        gpio_reset_pin(s_sd_gpio);
+        gpio_set_direction(s_sd_gpio, GPIO_MODE_OUTPUT);
+        gpio_set_level(s_sd_gpio, 1);
+    }
+
     ESP_LOGI(TAG,
-             "init success: bclk_gpio=%d ws_gpio=%d dout_gpio=%d sample_rate=%" PRIu32,
+             "init success: bclk_gpio=%d ws_gpio=%d dout_gpio=%d sd_gpio=%d sample_rate=%" PRIu32,
              config->bclk_gpio,
              config->ws_gpio,
              config->data_out_gpio,
+             config->sd_gpio,
              config->sample_rate_hz);
     return ESP_OK;
 }
@@ -96,6 +106,10 @@ esp_err_t BSP_MAX98357A_Deinit(void)
     s_tx_chan = NULL;
     s_initialized = false;
     s_sample_rate_hz = BSP_MAX98357A_DEFAULT_SAMPLE_RATE_HZ;
+
+    if (s_sd_gpio >= 0) {
+        gpio_set_level(s_sd_gpio, 0);
+    }
 
     if (ret != ESP_OK) {
         return ret;

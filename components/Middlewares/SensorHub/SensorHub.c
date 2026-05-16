@@ -1,6 +1,6 @@
 /**
  * @file SensorHub.c
- * @brief 传感器中枢实现，统一初始化和采集 AHT20/BMP280/BH1750/MQ2/AM312。
+ * @brief 传感器中枢实现，统一初始化和采集 AHT20/BMP280/BH1750/MQ2/AM312/LD2410B。
  *
  * 各传感器独立初始化，单个失败不影响其他；读取时逐个采集，失败的传感器
  * 对应 _ok 标记为 false，上层可据此选择性使用数据。
@@ -17,6 +17,7 @@
 #include "BSP_BH1750.h"
 #include "BSP_BMP280.h"
 #include "BSP_I2C.h"
+#include "BSP_LD2410B.h"
 #include "BSP_MQ2.h"
 
 static const char *TAG = "SensorHub";
@@ -91,6 +92,20 @@ esp_err_t SensorHub_Init(void)
         ESP_LOGI(TAG, "AM312 ready");
     } else {
         log_sensor_fault("AM312", "init", ret);
+    }
+
+    const bsp_ld2410b_config_t ld2410b_config = {
+        .uart_num = SENSOR_HUB_LD2410B_UART_NUM,
+        .tx_gpio = SENSOR_HUB_LD2410B_TX_GPIO,
+        .rx_gpio = SENSOR_HUB_LD2410B_RX_GPIO,
+        .baud_rate = BSP_LD2410B_DEFAULT_BAUD_RATE,
+    };
+    ret = BSP_LD2410B_Init(&ld2410b_config);
+    if (ret == ESP_OK) {
+        s_sensor_ok.ld2410b = true;
+        ESP_LOGI(TAG, "LD2410B ready");
+    } else {
+        log_sensor_fault("LD2410B", "init", ret);
     }
 
     ESP_LOGW(TAG, "NOTE: MQ2/AM312 use ADC/GPIO; unplugged modules may need value-range checks or hardware detection");
@@ -203,6 +218,26 @@ esp_err_t SensorHub_Read(sensor_hub_data_t *data)
         log_sensor_not_detected("AM312");
     }
 
+    if (s_sensor_ok.ld2410b) {
+        bsp_ld2410b_status_t status = {0};
+        ret = BSP_LD2410B_ReadStatus(&status, SENSOR_HUB_LD2410B_READ_TIMEOUT_MS);
+        if (ret == ESP_OK) {
+            data->ld2410b_presence = status.presence;
+            data->ld2410b_moving_target = status.moving_target;
+            data->ld2410b_stationary_target = status.stationary_target;
+            data->ld2410b_moving_distance_cm = status.moving_distance_cm;
+            data->ld2410b_moving_energy = status.moving_energy;
+            data->ld2410b_stationary_distance_cm = status.stationary_distance_cm;
+            data->ld2410b_stationary_energy = status.stationary_energy;
+            data->ld2410b_detection_distance_cm = status.detection_distance_cm;
+            data->ld2410b_ok = true;
+        } else if (ret != ESP_ERR_TIMEOUT) {
+            log_sensor_fault("LD2410B", "read", ret);
+        }
+    } else {
+        log_sensor_not_detected("LD2410B");
+    }
+
     return ESP_OK;
 }
 
@@ -240,5 +275,16 @@ void SensorHub_LogData(const sensor_hub_data_t *data)
 
     if (data->am312_ok) {
         ESP_LOGI(TAG, "AM312: motion_detected=%d", data->motion_detected);
+    }
+
+    if (data->ld2410b_ok) {
+        ESP_LOGI(TAG,
+                 "LD2410B: presence=%d moving=%d stationary=%d moving_cm=%u stationary_cm=%u detect_cm=%u",
+                 data->ld2410b_presence,
+                 data->ld2410b_moving_target,
+                 data->ld2410b_stationary_target,
+                 (unsigned)data->ld2410b_moving_distance_cm,
+                 (unsigned)data->ld2410b_stationary_distance_cm,
+                 (unsigned)data->ld2410b_detection_distance_cm);
     }
 }

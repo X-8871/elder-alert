@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>登录 - 居家安全看护面板</title>
+    <link rel="stylesheet" href="login.css?v=20260516-1724" />
+  </head>
+  <body>
+    <div class="login-frame">
+      <main class="login-shell">
+        <section class="login-card" aria-label="登录">
+          <div class="login-copy">
+            <p class="eyebrow">ESP32-S3 独居老人风险预警终端</p>
+            <h1>居家安全看护面板</h1>
+            <p>请输入账号密码后进入监控面板。</p>
+          </div>
+          <form id="login-form" class="login-form">
+            <label>
+              <span>账号</span>
+              <input id="username" name="username" type="text" autocomplete="username" required />
+            </label>
+            <label>
+              <span>密码</span>
+              <input id="password" name="password" type="password" autocomplete="current-password" required />
+            </label>
+            <p id="login-message" class="login-message" aria-live="polite"></p>
+            <button id="login-button" type="submit">登录</button>
+          </form>
+        </section>
+      </main>
+      <footer class="login-footer" aria-label="备案信息">
+        <div>ESP32-S3 独居老人风险预警终端</div>
+        <div>
+          <span>版权所有：居家安全看护面板</span>
+          <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">皖ICP备2026013632号-1</a>
+        </div>
+      </footer>
+    </div>
+
+    <script>
+      const form = document.getElementById("login-form");
+      const button = document.getElementById("login-button");
+      const message = document.getElementById("login-message");
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        message.textContent = "";
+        button.disabled = true;
+
+        try {
+          const response = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              username: form.username.value,
+              password: form.password.value,
+            }),
+          });
+          const data = await response.json().catch(() => null);
+          if (!response.ok || !data?.ok) {
+            throw new Error(data?.message || "登录失败");
+          }
+          window.location.href = "/";
+        } catch (error) {
+          message.textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

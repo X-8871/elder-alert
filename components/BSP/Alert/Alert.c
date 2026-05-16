@@ -143,7 +143,7 @@ esp_err_t BSP_Alert_Update(void)
     TickType_t now = xTaskGetTickCount();
     TickType_t interval = 0;
 
-    /* Update 只负责按当前模式推进闪烁/鸣叫节拍。 */
+    /* 更新函数只负责按当前模式推进闪烁/鸣叫节拍。 */
     switch (s_mode) {
     case BSP_ALERT_MODE_OFF:
         return apply_outputs(false, false);

@@ -3,7 +3,7 @@
  * @brief MQ2 烟雾/可燃气体传感器 BSP 驱动实现，ADC 单次采集 + 校准。
  *
  * GPIO 到 ADC 通道的映射支持 GPIO1~GPIO10，校准方案自动适配
- * curve fitting 或 line fitting（取决于芯片支持）。
+ * 曲线拟合或线性拟合（取决于芯片支持）。
  */
 
 #include "BSP_MQ2.h"
@@ -15,13 +15,13 @@
 #include "esp_adc/adc_cali_scheme.h"
 
 static const char *TAG = "BSP_MQ2";
-static adc_oneshot_unit_handle_t s_adc_handle = NULL;// ADC 单元句柄
-static adc_cali_handle_t s_cali_handle = NULL;//ADC校准句柄
+static adc_oneshot_unit_handle_t s_adc_handle = NULL; // ADC 单元句柄
+static adc_cali_handle_t s_cali_handle = NULL;        // ADC 校准句柄
 static adc_channel_t s_adc_channel = ADC_CHANNEL_0;
 static bool s_initialized = false;
 static bool s_cali_enabled = false;
 
-static esp_err_t mq2_gpio_to_channel(gpio_num_t analog_gpio, adc_channel_t *channel)//将 MQ2 使用的 GPIO 转换为 ADC 通道
+static esp_err_t mq2_gpio_to_channel(gpio_num_t analog_gpio, adc_channel_t *channel) // 将 MQ2 使用的 GPIO 转换为 ADC 通道
 {
     if (channel == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -87,15 +87,15 @@ esp_err_t BSP_MQ2_Init(gpio_num_t analog_gpio)
         return ret;
     }
 
-    adc_oneshot_chan_cfg_t chan_config = { //配置 ADC 通道
+    adc_oneshot_chan_cfg_t chan_config = { // 配置 ADC 通道
         .bitwidth = ADC_BITWIDTH_DEFAULT,
         .atten = ADC_ATTEN_DB_12,
     };
-    ret = adc_oneshot_config_channel(s_adc_handle, s_adc_channel, &chan_config);//应用 ADC 通道配置
+    ret = adc_oneshot_config_channel(s_adc_handle, s_adc_channel, &chan_config); // 应用 ADC 通道配置
     if (ret != ESP_OK) {
         return ret;
     }
-    // 尝试创建 ADC 校准句柄，用于将 raw 转换为电压 mV
+    // 尝试创建 ADC 校准句柄，用于将原始值转换为电压 mV
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_curve_fitting_config_t cali_config = {
         .unit_id = ADC_UNIT_1,
@@ -138,7 +138,7 @@ esp_err_t BSP_MQ2_Read(bsp_mq2_reading_t *reading)
     }
 
     reading->raw = raw;
-    if (s_cali_enabled) //如果校准可用，把 raw 转成 voltage_mv
+    if (s_cali_enabled) // 如果校准可用，把原始值转成 voltage_mv
     {
         ret = adc_cali_raw_to_voltage(s_cali_handle, raw, &reading->voltage_mv);
         if (ret != ESP_OK) {

@@ -7,6 +7,8 @@ set(src_dirs
         DisplayController
         EventLog
         WiFiManager
+        VoicePrompt
+        SpeechReplyPlayer
         SpeechUploader
         HttpAlertReporter
         RainMakerReporter)
@@ -20,6 +22,8 @@ set(include_dirs
         DisplayController
         EventLog
         WiFiManager
+        VoicePrompt
+        SpeechReplyPlayer
         SpeechUploader
         HttpAlertReporter
         RainMakerReporter)

@@ -3,11 +3,11 @@
  * @brief LED + 蜂鸣器声光提示驱动，支持多种闪烁/鸣叫模式。
  *
  * 模式说明：
- *   OFF    - 全关
- *   NORMAL - LED 常亮，蜂鸣器关
- *   REMIND - LED 慢闪（500ms），同步蜂鸣器
- *   ALARM  - LED 快闪（250ms），蜂鸣器同步鸣叫
- *   SOS    - LED 最快闪（120ms），蜂鸣器同步鸣叫
+ *   OFF：全关
+ *   NORMAL：LED 常亮，蜂鸣器关
+ *   REMIND：LED 慢闪（500ms），同步蜂鸣器
+ *   ALARM：LED 快闪（250ms），蜂鸣器同步鸣叫
+ *   SOS：LED 最快闪（120ms），蜂鸣器同步鸣叫
  *
  * 需在主循环中持续调用 BSP_Alert_Update() 以推进闪烁节拍。
  */

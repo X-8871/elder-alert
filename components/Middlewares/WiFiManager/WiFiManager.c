@@ -364,7 +364,7 @@ static esp_err_t start_wifi_sta(void)
  *   5. 打印二维码信息供 ESP RainMaker App 扫码
  *
  * 安全机制：使用 NETWORK_PROV_SECURITY_1 + PoP，手机端必须知道正确的 PoP 才能建立安全会话。
- * 失败时会回退清理（deinit）并把状态设为 FAILED。
+ * 失败时会回退清理资源并把状态设为 FAILED。
  */
 static esp_err_t start_ble_provisioning(void)
 {
@@ -402,9 +402,9 @@ static esp_err_t start_ble_provisioning(void)
  *
  * 按代码顺序执行 6 层初始化 + 1 次判断 + 1 次分支：
  *   ① NVS 初始化        — 为后续读/写配网凭据做准备
- *   ② netif 初始化      — 为创建网络接口打底
+ *   ② 网络接口初始化     — 为创建网络接口打底
  *   ③ 事件循环初始化     — 让系统能收发异步事件
- *   ④ 创建 STA netif    — 建立设备的"无线网卡对象"
+ *   ④ 创建 STA 网络接口  — 建立设备的"无线网卡对象"
  *   ⑤ 初始化 Wi-Fi 驱动  — 把 Wi-Fi 硬件/驱动子系统准备好
  *   ⑥ 注册 5 类事件回调  — 把 wifi_event_handler 绑定到 5 类事件源
  *   ⑦ 判断是否已配网     — network_prov_mgr_is_wifi_provisioned()
@@ -448,7 +448,7 @@ esp_err_t WiFiManager_Init(void)
         }
     }
 
-    /* ---- ⑤ 初始化 Wi-Fi 驱动：cfg 由宏生成默认配置（TX/RX buffer 大小、NVS 开关等） ---- */
+    /* ---- ⑤ 初始化 Wi-Fi 驱动：cfg 由宏生成默认配置（TX/RX 缓冲区大小、NVS 开关等） ---- */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ret = esp_wifi_init(&cfg);
     if (ret == ESP_ERR_INVALID_STATE) {
@@ -546,7 +546,7 @@ esp_err_t WiFiManager_Init(void)
 /*
  * 清除配网信息并重启 —— 三步走：
  *   ① 清除 NVS 中保存的 Wi-Fi 凭据（SSID/密码）
- *   ② 等待 200ms 确保 flash 写操作完成
+ *   ② 等待 200ms 确保闪存写操作完成
  *   ③ 重启设备
  *
  * 重启后 WiFiManager_Init() 会重新执行，此时 network_prov_mgr_is_wifi_provisioned()

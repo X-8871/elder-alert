@@ -4,8 +4,10 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "driver/gpio.h"
 
 #include "BSP_INMP441.h"
+#include "BSP_LD2410B.h"
 #include "BSP_MAX98357A.h"
 #include "AppController.h"
 #include "AlertController.h"
@@ -16,11 +18,18 @@
 #include "RainMakerReporter.h"
 #include "RiskEngine.h"
 #include "SensorHub.h"
+#include "SpeechReplyPlayer.h"
 #include "SpeechUploader.h"
+#include "VoicePrompt.h"
 #include "WiFiManager.h"
 
 #define TAG "SENSOR_DEMO"
 
+#define ENABLE_LD2410B_UART_TEST 0
+#define LD2410B_TEST_UART_NUM    UART_NUM_1
+#define LD2410B_TEST_TX_GPIO     GPIO_NUM_18
+#define LD2410B_TEST_RX_GPIO     GPIO_NUM_16
+#define LD2410B_TEST_BAUD_RATE   BSP_LD2410B_DEFAULT_BAUD_RATE
 #define ENABLE_INMP441_LEVEL_TEST  0
 #define ENABLE_INMP441_UPLOAD_TEST 1
 #define INMP441_TEST_BCLK_GPIO     GPIO_NUM_12
@@ -32,6 +41,79 @@
 #define MAX98357A_TEST_BCLK_GPIO     GPIO_NUM_12
 #define MAX98357A_TEST_WS_GPIO       GPIO_NUM_13
 #define MAX98357A_TEST_DOUT_GPIO     GPIO_NUM_15
+#define MAX98357A_TEST_SD_GPIO       GPIO_NUM_21
+
+#if ENABLE_LD2410B_UART_TEST
+static const char *ld2410b_target_state_name(bsp_ld2410b_target_state_t state)
+{
+    switch (state) {
+    case BSP_LD2410B_TARGET_NONE:
+        return "none";
+    case BSP_LD2410B_TARGET_MOVING:
+        return "moving";
+    case BSP_LD2410B_TARGET_STATIONARY:
+        return "stationary";
+    case BSP_LD2410B_TARGET_MOVING_AND_STATIONARY:
+        return "moving+stationary";
+    default:
+        return "unknown";
+    }
+}
+
+static void run_ld2410b_uart_test(void)
+{
+    esp_log_level_set("*", ESP_LOG_NONE);
+    esp_log_level_set(TAG, ESP_LOG_INFO);
+    esp_log_level_set("BSP_LD2410B", ESP_LOG_INFO);
+
+    const bsp_ld2410b_config_t config = {
+        .uart_num = LD2410B_TEST_UART_NUM,
+        .tx_gpio = LD2410B_TEST_TX_GPIO,
+        .rx_gpio = LD2410B_TEST_RX_GPIO,
+        .baud_rate = LD2410B_TEST_BAUD_RATE,
+    };
+
+    esp_err_t ret = BSP_LD2410B_Init(&config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "LD2410B init failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ESP_LOGI(TAG, "LD2410B UART test only: module TX->GPIO16, module RX->GPIO18");
+    ESP_LOGI(TAG, "Move, sit still, then leave the detection area and compare with the phone app");
+
+    TickType_t last_print_tick = 0;
+    bsp_ld2410b_status_t latest = {0};
+    bool has_status = false;
+
+    while (1) {
+        bsp_ld2410b_status_t status = {0};
+        ret = BSP_LD2410B_ReadStatus(&status, 250);
+        if (ret == ESP_OK) {
+            latest = status;
+            has_status = true;
+        } else if (ret != ESP_ERR_TIMEOUT) {
+            ESP_LOGW(TAG, "LD2410B frame parse failed: %s", esp_err_to_name(ret));
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        if (has_status && now - last_print_tick >= pdMS_TO_TICKS(500)) {
+            ESP_LOGI(TAG,
+                     "LD2410B presence=%d state=%s moving=%d moving_cm=%u moving_energy=%u stationary=%d stationary_cm=%u stationary_energy=%u detect_cm=%u",
+                     latest.presence,
+                     ld2410b_target_state_name(latest.target_state),
+                     latest.moving_target,
+                     (unsigned)latest.moving_distance_cm,
+                     (unsigned)latest.moving_energy,
+                     latest.stationary_target,
+                     (unsigned)latest.stationary_distance_cm,
+                     (unsigned)latest.stationary_energy,
+                     (unsigned)latest.detection_distance_cm);
+            last_print_tick = now;
+        }
+    }
+}
+#endif
 
 #if ENABLE_INMP441_LEVEL_TEST
 static void run_inmp441_level_test(void)
@@ -67,6 +149,14 @@ static void run_inmp441_level_test(void)
 }
 #endif
 
+static void mute_max98357a_early(void)
+{
+    gpio_reset_pin(MAX98357A_TEST_SD_GPIO);
+    gpio_set_direction(MAX98357A_TEST_SD_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(MAX98357A_TEST_SD_GPIO, 0);
+    ESP_LOGI(TAG, "MAX98357A SD muted on GPIO%d", MAX98357A_TEST_SD_GPIO);
+}
+
 #if ENABLE_INMP441_UPLOAD_TEST
 static bool s_speech_upload_ready = false;
 
@@ -96,27 +186,17 @@ static esp_err_t play_upload_ok_prompt(void)
         .bclk_gpio = MAX98357A_TEST_BCLK_GPIO,
         .ws_gpio = MAX98357A_TEST_WS_GPIO,
         .data_out_gpio = MAX98357A_TEST_DOUT_GPIO,
+        .sd_gpio = MAX98357A_TEST_SD_GPIO,
         .sample_rate_hz = BSP_MAX98357A_DEFAULT_SAMPLE_RATE_HZ,
     };
 
-    esp_err_t ret = BSP_MAX98357A_Init(&amp_config);
-    if (ret != ESP_OK) {
-        return ret;
+    esp_err_t ret = SpeechReplyPlayer_PlayLatest(&amp_config);
+    if (ret == ESP_OK) {
+        return ESP_OK;
     }
 
-    ret = BSP_MAX98357A_PlayTone(1200U, 120U, BSP_MAX98357A_DEFAULT_VOLUME);
-    if (ret == ESP_OK) {
-        ret = BSP_MAX98357A_PlaySilence(80U);
-    }
-    if (ret == ESP_OK) {
-        ret = BSP_MAX98357A_PlayTone(1600U, 120U, BSP_MAX98357A_DEFAULT_VOLUME);
-    }
-
-    esp_err_t deinit_ret = BSP_MAX98357A_Deinit();
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    return deinit_ret;
+    ESP_LOGW(TAG, "dynamic reply playback failed, fallback to local prompt: %s", esp_err_to_name(ret));
+    return VoicePrompt_PlayUploadOk(&amp_config);
 }
 #endif
 
@@ -170,6 +250,7 @@ static void run_max98357a_output_test(void)
         .bclk_gpio = MAX98357A_TEST_BCLK_GPIO,
         .ws_gpio = MAX98357A_TEST_WS_GPIO,
         .data_out_gpio = MAX98357A_TEST_DOUT_GPIO,
+        .sd_gpio = MAX98357A_TEST_SD_GPIO,
         .sample_rate_hz = BSP_MAX98357A_DEFAULT_SAMPLE_RATE_HZ,
     };
 
@@ -221,7 +302,7 @@ static esp_err_t prepare_connectivity_primitives(void)
 /*
  * 系统总架构说明
  *
- * 这份工程按“main -> Middleware -> BSP”三层来组织。
+ * 这份工程按“main -> 中间层 -> BSP”三层来组织。
  * 读代码时建议也按这个顺序往下看，因为控制权就是这样一层层往下分发的。
  *
  * 1. 顶层 main
@@ -234,7 +315,7 @@ static esp_err_t prepare_connectivity_primitives(void)
  *    - 再把状态同步给事件日志和显示模块
  *    - 在两次采样之间，持续处理按键和声光提醒刷新
  *
- * 2. Middleware 中间层
+ * 2. 中间层
  *    这一层负责“业务编排”，把多个底层硬件能力组合成可用的系统行为。
  *
  *    - SensorHub
@@ -299,10 +380,17 @@ static esp_err_t prepare_connectivity_primitives(void)
  */
 void app_main(void)
 {
+#if ENABLE_LD2410B_UART_TEST
+    run_ld2410b_uart_test();
+    return;
+#endif
+
 #if ENABLE_INMP441_LEVEL_TEST
     run_inmp441_level_test();
     return;
 #endif
+
+    mute_max98357a_early();
 
 #if ENABLE_MAX98357A_OUTPUT_TEST
     run_max98357a_output_test();
@@ -322,7 +410,7 @@ void app_main(void)
         return;
     }
 
-    /* 第 3 步：初始化用户输入链路，让确认键和 SOS 键开始产生事件。 */
+    /* 第 3 步：初始化用户输入链路，让确认、SOS 和录音按键开始产生事件。 */
     ret = InputController_Init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "InputController init failed: %s", esp_err_to_name(ret));
@@ -379,7 +467,7 @@ void app_main(void)
     init_inmp441_upload_test();
 #endif
 
-    /* 第 9 步：初始化 RainMaker 上云能力。失败不阻塞本地闭环。 */
+    /* 第 9 步：进入主业务循环。 */
     while (1) {
         /* 每一轮 while 都表示“采一帧环境快照，并据此推进一次系统业务状态”。 */
         sensor_hub_data_t sensor_data = {0};
@@ -397,13 +485,13 @@ void app_main(void)
              * - remind_timeout_active: 本地提醒是否已因无人确认升级
              */
             risk_context.now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-            risk_context.inactive_ms = (!sensor_data.am312_ok || sensor_data.motion_detected)
+            risk_context.inactive_ms = ((sensor_data.am312_ok && sensor_data.motion_detected) ||
+                                        (sensor_data.ld2410b_ok &&
+                                         (!sensor_data.ld2410b_presence || sensor_data.ld2410b_moving_target)))
                                            ? 0
                                            : AppController_GetInactiveTimeMs();
             risk_context.manual_sos_active = AppController_IsSosLatched();
-            risk_context.remind_timeout_active = sensor_data.am312_ok &&
-                                                  !sensor_data.motion_detected &&
-                                                  AppController_IsRemindTimeoutLatched();
+            risk_context.remind_timeout_active = AppController_IsRemindTimeoutLatched();
 
             /* 配网联调期间先关闭周期性传感器串口输出，保留 BLE/Wi-Fi/RainMaker 日志。 */
             // SensorHub_LogData(&sensor_data);

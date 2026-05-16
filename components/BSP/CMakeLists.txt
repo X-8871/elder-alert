@@ -7,6 +7,7 @@ set(src_dirs
                 BH1750
                 MQ2
                 AM312
+                LD2410B
                 INMP441
                 MAX98357A
                 Alert
@@ -20,6 +21,7 @@ set(include_dirs
                 BH1750
                 MQ2
                 AM312
+                LD2410B
                 INMP441
                 MAX98357A
                 Alert

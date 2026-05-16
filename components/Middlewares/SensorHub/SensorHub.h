@@ -1,6 +1,6 @@
 /**
  * @file SensorHub.h
- * @brief 传感器中枢，统一管理 AHT20 / BMP280 / BH1750 / MQ2 / AM312 的初始化和数据采集。
+ * @brief 传感器中枢，统一管理 AHT20 / BMP280 / BH1750 / MQ2 / AM312 / LD2410B 的初始化和数据采集。
  *
  * SensorHub 屏蔽底层各传感器驱动差异，提供统一的数据读取接口和健康状态查询。
  * 单个传感器初始化失败不会阻塞其他传感器，上层可通过 sensor_hub_status_t 判断可用性。
@@ -13,6 +13,7 @@
 
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+#include "driver/uart.h"
 #include "esp_err.h"
 
 /* I2C 总线配置，AHT20/BMP280/BH1750/OLED 共享此总线。 */
@@ -22,6 +23,10 @@
 #define SENSOR_HUB_I2C_FREQ_HZ    100000  /* 100 kHz 标准模式 */
 #define SENSOR_HUB_MQ2_ADC_GPIO   GPIO_NUM_1
 #define SENSOR_HUB_AM312_GPIO     GPIO_NUM_6
+#define SENSOR_HUB_LD2410B_UART_NUM UART_NUM_1
+#define SENSOR_HUB_LD2410B_TX_GPIO  GPIO_NUM_18
+#define SENSOR_HUB_LD2410B_RX_GPIO  GPIO_NUM_16
+#define SENSOR_HUB_LD2410B_READ_TIMEOUT_MS 250U
 
 /* MQ2 原始 ADC 值有效区间，超出则认为传感器未接或异常。 */
 #define SENSOR_HUB_MQ2_MIN_VALID_RAW 10
@@ -34,6 +39,7 @@ typedef struct {
     bool bh1750;
     bool mq2;
     bool am312;
+    bool ld2410b;
 } sensor_hub_status_t;
 
 /** 一次完整采集的传感器数据快照。 */
@@ -47,11 +53,20 @@ typedef struct {
     int mq2_voltage_mv;      /* MQ2 校准后电压 (mV)，校准不可用时为 -1 */
     int am312_raw_level;     /* AM312 GPIO 原始电平 */
     bool motion_detected;    /* AM312 人体活动检测结果（已按极性解释） */
+    bool ld2410b_presence;   /* LD2410B 是否检测到人体存在 */
+    bool ld2410b_moving_target;
+    bool ld2410b_stationary_target;
+    uint16_t ld2410b_moving_distance_cm;
+    uint8_t ld2410b_moving_energy;
+    uint16_t ld2410b_stationary_distance_cm;
+    uint8_t ld2410b_stationary_energy;
+    uint16_t ld2410b_detection_distance_cm;
     bool aht20_ok;           /* 本轮 AHT20 读取是否成功 */
     bool bmp280_ok;
     bool bh1750_ok;
     bool mq2_ok;
     bool am312_ok;
+    bool ld2410b_ok;
 } sensor_hub_data_t;
 
 /** 初始化所有传感器，单个失败不影响其他传感器。 */

@@ -4,7 +4,7 @@
  *
  * RiskEngine 采用多维度评分机制，从活动状态、环境指标、手动求助三个维度打分，
  * 最终汇总为 NORMAL / REMIND / WARNING / EMERGENCY 四级风险。
- * 支持 DEMO 和 REAL 两种运行模式，阈值可独立配置。
+ * 支持演示模式（DEMO）和真实模式（REAL）两种运行模式，阈值可独立配置。
  */
 
 #pragma once
@@ -34,13 +34,13 @@ typedef enum {
     RISK_LEVEL_EMERGENCY,   /* 紧急（如烟雾报警或手动 SOS） */
 } risk_level_t;
 
-/** 运行模式：DEMO 用短阈值便于演示，REAL 用实际部署阈值。 */
+/** 运行模式：演示模式（DEMO）用短阈值便于演示，真实模式（REAL）用实际部署阈值。 */
 typedef enum {
     RISK_RUN_MODE_DEMO = 0,
     RISK_RUN_MODE_REAL,
 } risk_run_mode_t;
 
-/** 运行时风险阈值配置，DEMO/REAL 模式各一份。 */
+/** 运行时风险阈值配置，演示模式（DEMO）和真实模式（REAL）各一份。 */
 typedef struct {
     uint32_t no_motion_remind_ms;    /* 无活动提醒阈值 (ms) */
     uint32_t mq2_confirm_ms;         /* MQ2 超阈值持续确认时间 (ms) */
@@ -74,6 +74,8 @@ typedef struct {
     bool mq2_warning;                /* MQ2 是否确认告警 */
     bool manual_sos;                 /* 是否手动 SOS */
     bool remind_timeout;             /* 提醒是否超时 */
+    bool static_presence_no_motion;   /* 毫米波有人静止且长时间无明显活动 */
+    bool mmwave_fault_fallback;       /* 毫米波不可用时回退 AM312 活动判断 */
 } risk_result_t;
 
 /** 综合传感器数据和上下文，计算各维度得分并确定风险等级。 */

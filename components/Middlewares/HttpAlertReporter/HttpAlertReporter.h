@@ -5,7 +5,7 @@
  * 上报策略：
  *   - 事件上报（EVENT）：状态变化、风险原因变化、SOS 新触发时立即上报
  *   - 遥测上报（TELEMETRY）：固定间隔周期上报当前传感器数据
- *   - 设备标识使用 WiFi STA MAC 地址
+ *   - 设备标识使用 Wi-Fi STA MAC 地址
  */
 
 #pragma once
