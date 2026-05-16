@@ -147,3 +147,101 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+/* 2026-05-16 login redesign aligned with the dashboard console. */
+body {
+  background:
+    linear-gradient(90deg, rgba(23, 105, 224, 0.045) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(21, 154, 168, 0.04) 1px, transparent 1px),
+    #edf4f8;
+  background-size: 44px 44px;
+  letter-spacing: 0;
+}
+
+.login-frame {
+  width: min(1120px, calc(100% - 32px));
+  min-height: calc(100vh - 32px);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 14px 36px rgba(22, 42, 65, 0.08);
+}
+
+.login-shell {
+  padding: 20px;
+}
+
+.login-card {
+  border-radius: 8px;
+  border-color: #d8e3ea;
+  background: #ffffff;
+  box-shadow: 0 8px 18px rgba(22, 42, 65, 0.06);
+}
+
+.eyebrow {
+  color: #1769e0;
+  letter-spacing: 0;
+}
+
+h1 {
+  color: #172233;
+}
+
+p,
+label {
+  color: #5f6f7e;
+}
+
+input {
+  border-radius: 8px;
+  border-color: #d8e3ea;
+  background: #f7fafc;
+}
+
+input:focus {
+  border-color: #159aa8;
+  box-shadow: 0 0 0 4px rgba(21, 154, 168, 0.16);
+}
+
+button {
+  border-radius: 8px;
+  border-color: #159aa8;
+  color: #ffffff;
+  background: #159aa8;
+  box-shadow: none;
+}
+
+.login-footer {
+  background: none;
+  padding: 0;
+}
+
+.login-footer > div:first-child {
+  padding: 15px 20px;
+  background: #252a31;
+}
+
+.login-footer > div:last-child {
+  padding: 18px 20px;
+  background: #183a88;
+}
+
+.login-footer a {
+  color: rgba(255, 255, 255, 0.84);
+}
+
+@media (max-width: 760px) {
+  .login-frame {
+    width: min(100% - 20px, 1120px);
+    min-height: calc(100vh - 20px);
+    margin: 10px auto;
+  }
+
+  .login-card {
+    padding: 24px;
+  }
+
+  .login-footer a {
+    display: block;
+    margin: 8px 0 0;
+  }
+}
