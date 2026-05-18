@@ -15,14 +15,20 @@
 
 #include "SensorHub.h"
 
-/* 高温告警阈值 (°C) */
-#define RISK_ENGINE_TEMP_HIGH_C             35.0f
-#define RISK_ENGINE_HUMIDITY_HIGH_PERCENT   85.0f  /* 高湿度告警阈值 (%) */
-#define RISK_ENGINE_MQ2_WARN_RAW           1500   /* MQ2 烟雾/可燃气体告警原始阈值 */
-#define RISK_ENGINE_LOW_LUX_THRESHOLD        30    /* 低光照判定阈值 (lux) */
-#define RISK_ENGINE_NO_MOTION_REMIND_MS   30000U   /* DEMO 模式无活动提醒时间 (ms) */
-#define RISK_ENGINE_MQ2_CONFIRM_MS         3000U   /* MQ2 超阈值持续确认时间 (ms) */
+/* 实验版/演示版参数，对应规则表中的 DEMO 参数。 */
+#define RISK_ENGINE_TEMP_HIGH_C             30.0f
+#define RISK_ENGINE_MQ2_LIGHT_RAW          1000
+#define RISK_ENGINE_MQ2_ALARM_RAW          1300
+#define RISK_ENGINE_NO_MOTION_REMIND_MS   30000U
+#define RISK_ENGINE_TEMP_CONFIRM_MS       30000U
+#define RISK_ENGINE_MQ2_LIGHT_CONFIRM_MS   3000U
+#define RISK_ENGINE_MQ2_ALARM_CONFIRM_MS   5000U
+#define RISK_ENGINE_MQ2_CLEAR_CONFIRM_MS  10000U
 #define RISK_ENGINE_MQ2_FILTER_WINDOW         5U   /* MQ2 滑动平均滤波窗口大小 */
+#define RISK_ENGINE_TEMP_RISE_SHORT_MS     30000U
+#define RISK_ENGINE_TEMP_RISE_SHORT_C        2.0f
+#define RISK_ENGINE_TEMP_RISE_LONG_MS      60000U
+#define RISK_ENGINE_TEMP_RISE_LONG_C         3.0f
 
 #define RISK_ENGINE_RUN_MODE RISK_RUN_MODE_DEMO   /* 编译期选择运行模式 */
 
@@ -43,12 +49,19 @@ typedef enum {
 /** 运行时风险阈值配置，演示模式（DEMO）和真实模式（REAL）各一份。 */
 typedef struct {
     uint32_t no_motion_remind_ms;    /* 无活动提醒阈值 (ms) */
-    uint32_t mq2_confirm_ms;         /* MQ2 超阈值持续确认时间 (ms) */
+    uint32_t temp_confirm_ms;        /* 高温持续提醒时间 (ms) */
+    uint32_t mq2_light_confirm_ms;   /* MQ2 轻度异常持续确认时间 (ms) */
+    uint32_t mq2_alarm_confirm_ms;   /* MQ2 高危险持续确认时间 (ms) */
+    uint32_t mq2_clear_confirm_ms;   /* MQ2 回落稳定确认时间 (ms) */
     uint8_t mq2_filter_window;       /* MQ2 滑动平均窗口 */
-    int mq2_alarm_raw;               /* MQ2 告警原始值阈值 */
+    int mq2_light_raw;               /* MQ2 轻度异常原始值阈值 */
+    int mq2_alarm_raw;               /* MQ2 高危险原始值阈值 */
     float heat_temp_c;               /* 高温阈值 (°C) */
-    float heat_humidity_percent;     /* 高湿度阈值 (%) */
     uint16_t dark_lux_threshold;     /* 低光照阈值 (lux) */
+    uint32_t temp_rise_short_ms;     /* 短窗口温升判断时间 (ms) */
+    float temp_rise_short_c;         /* 短窗口温升阈值 (°C) */
+    uint32_t temp_rise_long_ms;      /* 长窗口温升判断时间 (ms) */
+    float temp_rise_long_c;          /* 长窗口温升阈值 (°C) */
 } risk_config_t;
 
 /** 评估所需的外部上下文，由 AppController 每轮填入。 */
@@ -57,6 +70,7 @@ typedef struct {
     uint32_t inactive_ms;            /* 自上次人体活动以来的时间 (ms) */
     bool manual_sos_active;          /* 用户是否已按下 SOS 键 */
     bool remind_timeout_active;      /* REMIND 状态是否已超时未确认 */
+    bool rest_context_active;        /* 是否处于休息上下文 */
 } risk_context_t;
 
 /** 单次风险评估的完整输出。 */
@@ -68,10 +82,12 @@ typedef struct {
     uint8_t total_score;             /* 三维度总分 */
     int mq2_filtered_raw;            /* MQ2 滤波后的原始值 */
     bool no_motion_timeout;          /* 是否触发无活动超时 */
-    bool low_light_no_motion;        /* 是否低光照且无活动 */
+    bool rest_context_active;        /* 当前是否处于休息上下文 */
     bool high_temperature;           /* 是否高温 */
-    bool high_humidity;              /* 是否高湿度 */
-    bool mq2_warning;                /* MQ2 是否确认告警 */
+    bool mq2_light_warning;          /* MQ2 是否轻度持续异常 */
+    bool mq2_high_alarm;             /* MQ2 是否高危险持续异常 */
+    bool mq2_temp_rise_alarm;        /* MQ2 轻度异常且温度明显上升 */
+    bool mq2_clear_stable;           /* MQ2 是否已回落并稳定 */
     bool manual_sos;                 /* 是否手动 SOS */
     bool remind_timeout;             /* 提醒是否超时 */
     bool static_presence_no_motion;   /* 毫米波有人静止且长时间无明显活动 */

@@ -19,10 +19,28 @@
 #include "RiskEngine.h"
 #include "SensorHub.h"
 
-/* REMIND 状态下等待用户确认的超时时间，超时后升级为 ALARM。 */
-#define APP_CONTROLLER_NO_MOTION_TIMEOUT_MS 30000
-#define APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_DEMO 15000U   /* 演示模式：15 秒 */
-#define APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_REAL 300000U /* 实际部署：5 分钟 */
+/* 规则表 v1: DEMO 用实验版参数，REAL 用真实场景参数。 */
+#define APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_DEMO 15000U
+#define APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_REAL (30U * 60U * 1000U)
+#define APP_CONTROLLER_HIGH_TEMP_COOLDOWN_MS_DEMO (60U * 1000U)
+#define APP_CONTROLLER_HIGH_TEMP_COOLDOWN_MS_REAL (10U * 60U * 1000U)
+#define APP_CONTROLLER_MQ2_ALARM_COOLDOWN_MS_DEMO 30000U
+#define APP_CONTROLLER_MQ2_ALARM_COOLDOWN_MS_REAL (5U * 60U * 1000U)
+#define APP_CONTROLLER_REST_ENTER_LUX_DEMO 30U
+#define APP_CONTROLLER_REST_ENTER_LUX_REAL 20U
+#define APP_CONTROLLER_REST_ENTER_MS_DEMO (60U * 1000U)
+#define APP_CONTROLLER_REST_ENTER_MS_REAL (10U * 60U * 1000U)
+#define APP_CONTROLLER_REST_EXIT_LUX_DEMO 60U
+#define APP_CONTROLLER_REST_EXIT_LUX_REAL 50U
+#define APP_CONTROLLER_DISTANCE_CHANGE_MIN_CM 20U
+#define APP_CONTROLLER_DISTANCE_CHANGE_COUNT_DEMO 2U
+#define APP_CONTROLLER_DISTANCE_CHANGE_COUNT_REAL 3U
+#define APP_CONTROLLER_DISTANCE_CHANGE_WINDOW_MS_DEMO 30000U
+#define APP_CONTROLLER_DISTANCE_CHANGE_WINDOW_MS_REAL (3U * 60U * 1000U)
+#define APP_CONTROLLER_LOW_LIGHT_ACTIVITY_SUM_CM_DEMO 50U
+#define APP_CONTROLLER_LOW_LIGHT_ACTIVITY_SUM_CM_REAL 100U
+#define APP_CONTROLLER_LOW_LIGHT_ACTIVITY_WINDOW_MS_DEMO 30000U
+#define APP_CONTROLLER_LOW_LIGHT_ACTIVITY_WINDOW_MS_REAL (60U * 1000U)
 #define APP_CONTROLLER_RUN_MODE RISK_ENGINE_RUN_MODE          /* 与 RiskEngine 共用运行模式宏 */
 
 /** 应用层状态枚举，由低到高表示风险等级递增。 */
@@ -34,6 +52,9 @@ typedef enum {
 } app_state_t;
 
 esp_err_t AppController_Init(void);
+
+/** 根据传感器快照更新休息上下文、活动时间和距离变化窗口。RiskEngine_Evaluate 前调用。 */
+esp_err_t AppController_UpdateContext(const sensor_hub_data_t *sensor_data);
 
 /** 根据传感器数据和风险结果更新应用状态。每轮主循环调用一次。 */
 esp_err_t AppController_Process(const sensor_hub_data_t *sensor_data, const risk_result_t *risk_result);
@@ -48,6 +69,7 @@ uint32_t AppController_GetInactiveTimeMs(void);
 
 bool AppController_IsSosLatched(void);
 bool AppController_IsRemindTimeoutLatched(void);
+bool AppController_IsRestContextActive(void);
 
 /** 获取 SOS 键累计触发次数（含重复触发）。 */
 uint32_t AppController_GetSosTriggerCount(void);

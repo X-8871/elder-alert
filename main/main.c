@@ -477,21 +477,24 @@ void app_main(void)
         /* 统一从 SensorHub 拉取一份完整传感器数据。 */
         ret = SensorHub_Read(&sensor_data);
         if (ret == ESP_OK) {
+            ret = AppController_UpdateContext(&sensor_data);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "AppController context update failed: %s", esp_err_to_name(ret));
+            }
+
             /*
              * 风险引擎除了原始传感器值外，还需要一些上下文：
              * - now_ms: 当前运行时刻，用于持续确认类风险计时
              * - inactive_ms: 最近多久没有检测到人体活动
              * - manual_sos_active: 用户是否已经手动触发 SOS
              * - remind_timeout_active: 本地提醒是否已因无人确认升级
+             * - rest_context_active: 是否处于低光休息上下文
              */
             risk_context.now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-            risk_context.inactive_ms = ((sensor_data.am312_ok && sensor_data.motion_detected) ||
-                                        (sensor_data.ld2410b_ok &&
-                                         (!sensor_data.ld2410b_presence || sensor_data.ld2410b_moving_target)))
-                                           ? 0
-                                           : AppController_GetInactiveTimeMs();
+            risk_context.inactive_ms = AppController_GetInactiveTimeMs();
             risk_context.manual_sos_active = AppController_IsSosLatched();
             risk_context.remind_timeout_active = AppController_IsRemindTimeoutLatched();
+            risk_context.rest_context_active = AppController_IsRestContextActive();
 
             /* 配网联调期间先关闭周期性传感器串口输出，保留 BLE/Wi-Fi/RainMaker 日志。 */
             // SensorHub_LogData(&sensor_data);

@@ -14,10 +14,12 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -33,6 +35,7 @@
 #define WIFI_MANAGER_PROV_QR_BASE_URL "https://espressif.github.io/esp-jumpstart/qrcode.html"
 #define WIFI_MANAGER_PROV_POP        "eldercare1234"               /* PoP（Proof of Possession）：配网口令，手机端必须知道此口令才能建立安全会话 */
 #define WIFI_MANAGER_PROV_SERVICE_PREFIX "PROV_"                   /* 服务名前缀，完整名 = PROV_ + MAC 后三字节，如 PROV_A1B2C3 */
+#define WIFI_MANAGER_SNTP_SYNC_WAIT_MS 30000U
 
 static const char *TAG = "WiFiManager";
 
@@ -40,6 +43,8 @@ static const char *TAG = "WiFiManager";
 
 static bool s_initialized = false;                                 /* 标记 Init 是否已执行过，保证幂等 */
 static bool s_provisioning_active = false;                         /* 标记 BLE 配网是否正在进行中，影响断线时的状态切换决策 */
+static bool s_sntp_initialized = false;                            /* 标记 SNTP 是否已显式初始化，避免重复 init */
+static bool s_sntp_wait_task_running = false;                      /* 防止重复创建等待任务 */
 static wifi_manager_state_t s_state = WIFI_MANAGER_STATE_IDLE;     /* 状态机当前状态，唯一由 set_state() 修改 */
 static char s_ip_string[16] = "0.0.0.0";                          /* 当前 IP 地址字符串，收到 IP_EVENT_STA_GOT_IP 时更新 */
 static esp_netif_t *s_sta_netif = NULL;                            /* Wi-Fi STA 网络接口对象，相当于软件层面的"无线网卡" */
@@ -145,6 +150,96 @@ static void log_provisioning_qr(const char *service_name)
     ESP_LOGI(TAG, "BLE provisioning service_name=%s pop=%s", service_name, WIFI_MANAGER_PROV_POP);
     ESP_LOGI(TAG, "Open this URL or scan its QR payload in ESP RainMaker app:");
     ESP_LOGI(TAG, "%s?data=%s", WIFI_MANAGER_PROV_QR_BASE_URL, payload);
+}
+
+static void sntp_time_sync_notification_cb(struct timeval *tv)
+{
+    (void)tv;
+
+    time_t now = time(NULL);
+    struct tm local_tm = {0};
+    if (localtime_r(&now, &local_tm) == NULL) {
+        ESP_LOGI(TAG, "SNTP time sync completed");
+        return;
+    }
+
+    char time_buffer[32] = {0};
+    strftime(time_buffer, sizeof(time_buffer), "%Y-%m-%d %H:%M:%S", &local_tm);
+    ESP_LOGI(TAG, "SNTP time sync completed, local_time=%s", time_buffer);
+}
+
+static void sntp_sync_wait_task(void *arg)
+{
+    (void)arg;
+
+    esp_err_t ret = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(WIFI_MANAGER_SNTP_SYNC_WAIT_MS));
+    if (ret == ESP_OK) {
+        time_t now = time(NULL);
+        struct tm local_tm = {0};
+        if (localtime_r(&now, &local_tm) != NULL) {
+            char time_buffer[32] = {0};
+            strftime(time_buffer, sizeof(time_buffer), "%Y-%m-%d %H:%M:%S", &local_tm);
+            ESP_LOGI(TAG, "SNTP sync wait completed, local_time=%s", time_buffer);
+        } else {
+            ESP_LOGI(TAG, "SNTP sync wait completed");
+        }
+    } else {
+        ESP_LOGW(TAG, "SNTP sync wait failed: %s", esp_err_to_name(ret));
+    }
+
+    s_sntp_wait_task_running = false;
+    vTaskDelete(NULL);
+}
+
+static void create_sntp_sync_wait_task_if_needed(void)
+{
+    if (s_sntp_wait_task_running) {
+        return;
+    }
+
+    BaseType_t task_ok = xTaskCreate(sntp_sync_wait_task,
+                                     "sntp_wait",
+                                     3072,
+                                     NULL,
+                                     tskIDLE_PRIORITY + 1,
+                                     NULL);
+    if (task_ok == pdPASS) {
+        s_sntp_wait_task_running = true;
+    } else {
+        ESP_LOGW(TAG, "failed to create SNTP wait task");
+    }
+}
+
+static void start_sntp(void)
+{
+    setenv("TZ", "CST-8", 1);
+    tzset();
+
+    if (!s_sntp_initialized) {
+        esp_sntp_config_t sntp_config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
+            3,
+            ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "ntp1.aliyun.com", "pool.ntp.org"));
+        sntp_config.start = false;
+        sntp_config.sync_cb = sntp_time_sync_notification_cb;
+
+        esp_err_t ret = esp_netif_sntp_init(&sntp_config);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SNTP init failed: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        s_sntp_initialized = true;
+        ESP_LOGI(TAG, "SNTP initialized");
+    }
+
+    esp_err_t ret = esp_netif_sntp_start();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SNTP start failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ESP_LOGI(TAG, "SNTP started with servers=ntp.aliyun.com, ntp1.aliyun.com, pool.ntp.org");
+    create_sntp_sync_wait_task_if_needed();
 }
 
 /*
@@ -289,6 +384,7 @@ static void wifi_event_handler(void *arg,
                  IP2STR(&got_ip->ip_info.ip));
         set_state(WIFI_MANAGER_STATE_CONNECTED);
         ESP_LOGI(TAG, "wifi connected, ip=%s", s_ip_string);
+        start_sntp();
         return;
     }
 

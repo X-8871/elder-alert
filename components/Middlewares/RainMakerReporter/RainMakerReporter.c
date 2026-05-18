@@ -370,7 +370,7 @@ esp_err_t RainMakerReporter_Init(void)
     }
 
     esp_rmaker_config_t rainmaker_cfg = {
-        .enable_time_sync = true,
+        .enable_time_sync = false,
     };
 
     s_handles.node = esp_rmaker_node_init(&rainmaker_cfg, RAINMAKER_NODE_NAME, RAINMAKER_NODE_TYPE);

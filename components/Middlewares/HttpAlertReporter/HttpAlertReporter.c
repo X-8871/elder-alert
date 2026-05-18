@@ -179,6 +179,13 @@ static uint32_t remind_confirm_timeout_ms(void)
                : APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_DEMO;
 }
 
+static uint32_t no_motion_remind_ms(void)
+{
+    return RISK_ENGINE_RUN_MODE == RISK_RUN_MODE_REAL
+               ? (5U * 60U * 1000U)
+               : RISK_ENGINE_NO_MOTION_REMIND_MS;
+}
+
 static report_mode_t get_report_mode(app_state_t state,
                                      const char *reason,
                                      uint32_t sos_trigger_count,
@@ -346,7 +353,7 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
         sensor_data->ld2410b_ok ? "true" : "false",
         risk_result->mmwave_fault_fallback ? "true" : "false",
         run_mode_string(),
-        (unsigned int)RISK_ENGINE_NO_MOTION_REMIND_MS,
+        (unsigned int)no_motion_remind_ms(),
         (unsigned int)remind_confirm_timeout_ms(),
         (unsigned int)APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_DEMO,
         (unsigned int)APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_REAL,

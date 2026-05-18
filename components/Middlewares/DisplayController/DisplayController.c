@@ -8,12 +8,29 @@
 #include "WiFiManager.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "lvgl.h"
 
-LV_FONT_DECLARE(lv_font_source_han_sans_sc_16_cjk);
-
 static const char *TAG = "DisplayController";
+
+#define UI_TOP_BAR_HEIGHT           22
+#define UI_TOP_BAR_PAD_HOR          6
+#define UI_TOP_BAR_PAD_VER          2
+#define UI_TIME_LABEL_WIDTH         52
+#define UI_WIFI_SLASH_SIZE          14
+#define UI_OFFLINE_BANNER_Y         22
+#define UI_TEXT_WIDTH               148
+#define UI_STATE_TEXT_WIDTH         148
+#define UI_STATUS_AREA_HEIGHT       70
+#define UI_STATE_LABEL_OFFSET_Y     -4
+#define UI_BOTTOM_PANEL_HEIGHT      38
+#define UI_BOTTOM_PANEL_Y           (BSP_TFT_GetHeight() - UI_BOTTOM_PANEL_HEIGHT)
+#define UI_DIVIDER_HEIGHT           2
+#define UI_BUTTON_WIDTH             64
+#define UI_BUTTON_HEIGHT            26
+#define UI_BUTTON_BOTTOM_MARGIN     6
+#define UI_BUTTON_SIDE_MARGIN       10
+#define UI_BUTTON_RADIUS            8
+#define UI_BUTTON_PAD               4
 
 static bool s_enabled = false;
 static lv_display_t *s_display = NULL;
@@ -24,14 +41,26 @@ static lv_obj_t *s_screen = NULL;
 static lv_obj_t *s_top_bar = NULL;
 static lv_obj_t *s_time_label = NULL;
 static lv_obj_t *s_network_label = NULL;
+static lv_obj_t *s_network_slash_line = NULL;
 static lv_obj_t *s_offline_banner = NULL;
+static lv_obj_t *s_status_area = NULL;
 static lv_obj_t *s_state_label = NULL;
-static lv_obj_t *s_reason_label = NULL;
-static lv_obj_t *s_prompt_label = NULL;
+static lv_obj_t *s_divider = NULL;
+static lv_obj_t *s_bottom_panel = NULL;
 static lv_obj_t *s_confirm_button = NULL;
 static lv_obj_t *s_sos_button = NULL;
 static lv_obj_t *s_confirm_label = NULL;
 static lv_obj_t *s_sos_label = NULL;
+
+static const lv_point_precise_t s_wifi_slash_points[] = {
+    {1, 12},
+    {12, 1},
+};
+
+typedef struct {
+    const char *state_text;
+    lv_color_t bg_color;
+} display_state_style_t;
 
 static bool tft_flush_done(esp_lcd_panel_io_handle_t panel_io,
                            esp_lcd_panel_io_event_data_t *edata,
@@ -60,88 +89,38 @@ static void tft_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *
 
 static const lv_font_t *ui_font(void)
 {
-    return &lv_font_source_han_sans_sc_16_cjk;
+    return LV_FONT_DEFAULT;
 }
 
-static lv_color_t state_bg_color(app_state_t state)
+static display_state_style_t display_state_style(app_state_t state)
 {
     switch (state) {
     case APP_STATE_NORMAL:
-        return lv_color_hex(0x1E9E55);
+        return (display_state_style_t){
+            .state_text = "NORMAL",
+            .bg_color = lv_color_hex(0x1E9E55),
+        };
     case APP_STATE_REMIND:
-        return lv_color_hex(0xE58A1F);
+        return (display_state_style_t){
+            .state_text = "REMIND",
+            .bg_color = lv_color_hex(0xE58A1F),
+        };
     case APP_STATE_ALARM:
-        return lv_color_hex(0xD64633);
+        return (display_state_style_t){
+            .state_text = "ALERT",
+            .bg_color = lv_color_hex(0xD64633),
+        };
     case APP_STATE_SOS:
-        return lv_color_hex(0xA61E22);
+        return (display_state_style_t){
+            .state_text = "SOS",
+            .bg_color = lv_color_hex(0xA61E22),
+        };
     default:
-        return lv_color_hex(0x5E5E5E);
+        return (display_state_style_t){
+            .state_text = "UNKNOWN",
+            .bg_color = lv_color_hex(0x5E5E5E),
+        };
     }
-}
-
-static const char *state_text(app_state_t state)
-{
-    switch (state) {
-    case APP_STATE_NORMAL:
-        return "当前正常";
-    case APP_STATE_REMIND:
-        return "请确认";
-    case APP_STATE_ALARM:
-        return "需要帮助";
-    case APP_STATE_SOS:
-        return "已求助";
-    default:
-        return "状态未知";
-    }
-}
-
-static const char *state_prompt_text(app_state_t state)
-{
-    switch (state) {
-    case APP_STATE_NORMAL:
-        return "设备正在守护您";
-    case APP_STATE_REMIND:
-        return "请按确认键";
-    case APP_STATE_ALARM:
-        return "请尽快确认";
-    case APP_STATE_SOS:
-        return "确认后可解除";
-    default:
-        return "";
-    }
-}
-
-static const char *build_short_reason(app_state_t app_state,
-                                      const sensor_hub_data_t *sensor_data,
-                                      const risk_result_t *risk_result)
-{
-    (void)sensor_data;
-
-    if (app_state == APP_STATE_NORMAL) {
-        return WiFiManager_IsConnected() ? "本地提醒已就绪" : "离线时本地提醒仍有效";
-    }
-    if (app_state == APP_STATE_REMIND) {
-        if (risk_result->static_presence_no_motion || risk_result->no_motion_timeout) {
-            return "长时间无活动";
-        }
-        return "请确认当前情况";
-    }
-    if (app_state == APP_STATE_ALARM) {
-        if (risk_result->mq2_warning) {
-            return "烟雾异常";
-        }
-        if (risk_result->high_temperature || risk_result->high_humidity) {
-            return "环境异常";
-        }
-        if (risk_result->low_light_no_motion || risk_result->static_presence_no_motion || risk_result->no_motion_timeout) {
-            return "活动异常";
-        }
-        return "检测到异常情况";
-    }
-    if (app_state == APP_STATE_SOS) {
-        return "等待家属联系";
-    }
-    return "";
 }
 
 static void build_time_text(char *buffer, size_t buffer_size)
@@ -174,11 +153,190 @@ static void build_time_text(char *buffer, size_t buffer_size)
 
 static void style_button_box(lv_obj_t *obj, lv_color_t bg_color)
 {
-    lv_obj_set_style_radius(obj, 8, 0);
+    lv_obj_set_style_radius(obj, UI_BUTTON_RADIUS, 0);
     lv_obj_set_style_border_width(obj, 0, 0);
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(obj, bg_color, 0);
-    lv_obj_set_style_pad_all(obj, 4, 0);
+    lv_obj_set_style_pad_all(obj, UI_BUTTON_PAD, 0);
+}
+
+static lv_obj_t *create_center_label(lv_obj_t *parent,
+                                     uint16_t width,
+                                     lv_color_t text_color,
+                                     lv_align_t align,
+                                     int32_t y_offset)
+{
+    lv_obj_t *label = lv_label_create(parent);
+    if (label == NULL) {
+        return NULL;
+    }
+
+    lv_obj_set_width(label, width);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(label, ui_font(), 0);
+    lv_obj_set_style_text_color(label, text_color, 0);
+    lv_obj_align(label, align, 0, y_offset);
+
+    return label;
+}
+
+static lv_obj_t *create_button_label(lv_obj_t *button, const char *text)
+{
+    lv_obj_t *label = lv_label_create(button);
+    if (label == NULL) {
+        return NULL;
+    }
+
+    lv_obj_set_style_text_font(label, ui_font(), 0);
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_label_set_text(label, text);
+    lv_obj_center(label);
+
+    return label;
+}
+
+static const lv_font_t *ui_state_font(void)
+{
+    return &lv_font_montserrat_20;
+}
+
+static esp_err_t create_top_bar(void)
+{
+    s_top_bar = lv_obj_create(s_screen);
+    if (s_top_bar == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    lv_obj_remove_style_all(s_top_bar);
+    lv_obj_set_size(s_top_bar, BSP_TFT_GetWidth(), UI_TOP_BAR_HEIGHT);
+    lv_obj_align(s_top_bar, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_opa(s_top_bar, LV_OPA_90, 0);
+    lv_obj_set_style_bg_color(s_top_bar, lv_color_white(), 0);
+    lv_obj_set_style_pad_hor(s_top_bar, UI_TOP_BAR_PAD_HOR, 0);
+    lv_obj_set_style_pad_ver(s_top_bar, UI_TOP_BAR_PAD_VER, 0);
+
+    s_time_label = lv_label_create(s_top_bar);
+    if (s_time_label == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_width(s_time_label, UI_TIME_LABEL_WIDTH);
+    lv_label_set_long_mode(s_time_label, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_align(s_time_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_font(s_time_label, ui_font(), 0);
+    lv_obj_set_style_text_color(s_time_label, lv_color_hex(0x1E1E1E), 0);
+    lv_obj_align(s_time_label, LV_ALIGN_LEFT_MID, 0, 0);
+
+    s_network_label = lv_label_create(s_top_bar);
+    if (s_network_label == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_style_text_font(s_network_label, ui_font(), 0);
+    lv_obj_set_style_text_color(s_network_label, lv_color_hex(0x1E1E1E), 0);
+    lv_obj_align(s_network_label, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_label_set_text(s_network_label, LV_SYMBOL_WIFI);
+
+    s_network_slash_line = lv_line_create(s_top_bar);
+    if (s_network_slash_line == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_size(s_network_slash_line, UI_WIFI_SLASH_SIZE, UI_WIFI_SLASH_SIZE);
+    lv_line_set_points(s_network_slash_line, s_wifi_slash_points, 2);
+    lv_obj_set_style_line_width(s_network_slash_line, 2, 0);
+    lv_obj_set_style_line_color(s_network_slash_line, lv_color_black(), 0);
+    lv_obj_set_style_line_rounded(s_network_slash_line, true, 0);
+    lv_obj_align_to(s_network_slash_line, s_network_label, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(s_network_slash_line, LV_OBJ_FLAG_HIDDEN);
+
+    return ESP_OK;
+}
+
+static esp_err_t create_status_labels(void)
+{
+    s_offline_banner = create_center_label(s_screen,
+                                           UI_TEXT_WIDTH,
+                                           lv_color_white(),
+                                           LV_ALIGN_TOP_MID,
+                                           UI_OFFLINE_BANNER_Y);
+    if (s_offline_banner == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_label_set_text(s_offline_banner, "OFFLINE MODE");
+
+    s_status_area = lv_obj_create(s_screen);
+    if (s_status_area == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_remove_style_all(s_status_area);
+    lv_obj_set_size(s_status_area, BSP_TFT_GetWidth(), UI_STATUS_AREA_HEIGHT);
+    lv_obj_align(s_status_area, LV_ALIGN_CENTER, 0, -UI_BOTTOM_PANEL_HEIGHT / 2);
+
+    s_state_label = create_center_label(s_status_area,
+                                        UI_STATE_TEXT_WIDTH,
+                                        lv_color_white(),
+                                        LV_ALIGN_CENTER,
+                                        UI_STATE_LABEL_OFFSET_Y);
+    if (s_state_label == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_style_text_font(s_state_label, ui_state_font(), 0);
+    lv_label_set_long_mode(s_state_label, LV_LABEL_LONG_CLIP);
+    return ESP_OK;
+}
+
+static esp_err_t create_button_row(void)
+{
+    s_divider = lv_obj_create(s_screen);
+    if (s_divider == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_remove_style_all(s_divider);
+    lv_obj_set_size(s_divider, BSP_TFT_GetWidth(), UI_DIVIDER_HEIGHT);
+    lv_obj_align(s_divider, LV_ALIGN_TOP_MID, 0, UI_BOTTOM_PANEL_Y - UI_DIVIDER_HEIGHT);
+    lv_obj_set_style_bg_opa(s_divider, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_divider, lv_color_hex(0xFFFFFF), 0);
+
+    s_bottom_panel = lv_obj_create(s_screen);
+    if (s_bottom_panel == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_remove_style_all(s_bottom_panel);
+    lv_obj_set_size(s_bottom_panel, BSP_TFT_GetWidth(), UI_BOTTOM_PANEL_HEIGHT);
+    lv_obj_align(s_bottom_panel, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(s_bottom_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_bottom_panel, lv_color_white(), 0);
+
+    s_confirm_button = lv_obj_create(s_screen);
+    if (s_confirm_button == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_remove_style_all(s_confirm_button);
+    lv_obj_set_size(s_confirm_button, UI_BUTTON_WIDTH, UI_BUTTON_HEIGHT);
+    lv_obj_align_to(s_confirm_button, s_bottom_panel, LV_ALIGN_LEFT_MID, UI_BUTTON_SIDE_MARGIN, 0);
+    style_button_box(s_confirm_button, lv_color_hex(0x147A46));
+
+    s_confirm_label = create_button_label(s_confirm_button, "Confirm");
+    if (s_confirm_label == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_style_text_font(s_confirm_label, LV_FONT_DEFAULT, 0);
+
+    s_sos_button = lv_obj_create(s_screen);
+    if (s_sos_button == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_remove_style_all(s_sos_button);
+    lv_obj_set_size(s_sos_button, UI_BUTTON_WIDTH, UI_BUTTON_HEIGHT);
+    lv_obj_align_to(s_sos_button, s_bottom_panel, LV_ALIGN_RIGHT_MID, -UI_BUTTON_SIDE_MARGIN, 0);
+    style_button_box(s_sos_button, lv_color_hex(0xC92F2A));
+
+    s_sos_label = create_button_label(s_sos_button, "SOS");
+    if (s_sos_label == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_style_text_font(s_sos_label, LV_FONT_DEFAULT, 0);
+
+    return ESP_OK;
 }
 
 static esp_err_t build_ui_tree(void)
@@ -194,81 +352,40 @@ static esp_err_t build_ui_tree(void)
     lv_obj_set_style_bg_color(s_screen, lv_color_hex(0x1E9E55), 0);
     lv_obj_set_style_pad_all(s_screen, 0, 0);
 
-    s_top_bar = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_top_bar);
-    lv_obj_set_size(s_top_bar, BSP_TFT_GetWidth(), 20);
-    lv_obj_align(s_top_bar, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_opa(s_top_bar, LV_OPA_90, 0);
-    lv_obj_set_style_bg_color(s_top_bar, lv_color_white(), 0);
-    lv_obj_set_style_pad_hor(s_top_bar, 6, 0);
-    lv_obj_set_style_pad_ver(s_top_bar, 2, 0);
+    esp_err_t ret = create_top_bar();
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
-    s_time_label = lv_label_create(s_top_bar);
-    lv_obj_set_style_text_font(s_time_label, ui_font(), 0);
-    lv_obj_set_style_text_color(s_time_label, lv_color_hex(0x1E1E1E), 0);
-    lv_obj_align(s_time_label, LV_ALIGN_LEFT_MID, 0, 0);
+    ret = create_status_labels();
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
-    s_network_label = lv_label_create(s_top_bar);
-    lv_obj_set_style_text_font(s_network_label, ui_font(), 0);
-    lv_obj_set_style_text_color(s_network_label, lv_color_hex(0x1E1E1E), 0);
-    lv_obj_align(s_network_label, LV_ALIGN_RIGHT_MID, 0, 0);
-
-    s_offline_banner = lv_label_create(s_screen);
-    lv_obj_set_style_text_font(s_offline_banner, ui_font(), 0);
-    lv_obj_set_style_text_color(s_offline_banner, lv_color_white(), 0);
-    lv_label_set_text(s_offline_banner, "离线模式");
-    lv_obj_align(s_offline_banner, LV_ALIGN_TOP_MID, 0, 24);
-
-    s_state_label = lv_label_create(s_screen);
-    lv_obj_set_width(s_state_label, 112);
-    lv_label_set_long_mode(s_state_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(s_state_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(s_state_label, ui_font(), 0);
-    lv_obj_set_style_text_color(s_state_label, lv_color_white(), 0);
-    lv_obj_align(s_state_label, LV_ALIGN_TOP_MID, 0, 46);
-
-    s_reason_label = lv_label_create(s_screen);
-    lv_obj_set_width(s_reason_label, 114);
-    lv_label_set_long_mode(s_reason_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(s_reason_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(s_reason_label, ui_font(), 0);
-    lv_obj_set_style_text_color(s_reason_label, lv_color_white(), 0);
-    lv_obj_align(s_reason_label, LV_ALIGN_TOP_MID, 0, 74);
-
-    s_prompt_label = lv_label_create(s_screen);
-    lv_obj_set_width(s_prompt_label, 114);
-    lv_label_set_long_mode(s_prompt_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(s_prompt_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(s_prompt_label, ui_font(), 0);
-    lv_obj_set_style_text_color(s_prompt_label, lv_color_hex(0xF7F7F7), 0);
-    lv_obj_align(s_prompt_label, LV_ALIGN_TOP_MID, 0, 102);
-
-    s_confirm_button = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_confirm_button);
-    lv_obj_set_size(s_confirm_button, 56, 28);
-    lv_obj_align(s_confirm_button, LV_ALIGN_BOTTOM_LEFT, 6, -8);
-    style_button_box(s_confirm_button, lv_color_hex(0x147A46));
-
-    s_confirm_label = lv_label_create(s_confirm_button);
-    lv_obj_set_style_text_font(s_confirm_label, ui_font(), 0);
-    lv_obj_set_style_text_color(s_confirm_label, lv_color_white(), 0);
-    lv_label_set_text(s_confirm_label, "确认");
-    lv_obj_center(s_confirm_label);
-
-    s_sos_button = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_sos_button);
-    lv_obj_set_size(s_sos_button, 56, 28);
-    lv_obj_align(s_sos_button, LV_ALIGN_BOTTOM_RIGHT, -6, -8);
-    style_button_box(s_sos_button, lv_color_hex(0xC92F2A));
-
-    s_sos_label = lv_label_create(s_sos_button);
-    lv_obj_set_style_text_font(s_sos_label, ui_font(), 0);
-    lv_obj_set_style_text_color(s_sos_label, lv_color_white(), 0);
-    lv_label_set_text(s_sos_label, "SOS");
-    lv_obj_center(s_sos_label);
+    ret = create_button_row();
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
     lv_screen_load(s_screen);
     return ESP_OK;
+}
+
+static void update_online_styles(bool online)
+{
+    const lv_color_t top_bar_color = lv_color_white();
+    const lv_color_t text_color = lv_color_hex(0x1E1E1E);
+
+    lv_obj_set_style_bg_color(s_top_bar, top_bar_color, 0);
+    lv_obj_set_style_text_color(s_time_label, text_color, 0);
+    lv_obj_set_style_text_color(s_network_label, text_color, 0);
+    lv_obj_add_flag(s_offline_banner, LV_OBJ_FLAG_HIDDEN);
+
+    if (online) {
+        lv_obj_add_flag(s_network_slash_line, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_remove_flag(s_network_slash_line, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 esp_err_t DisplayController_Init(void)
@@ -341,24 +458,18 @@ esp_err_t DisplayController_Update(app_state_t app_state,
     char time_text[8] = "--:--";
     build_time_text(time_text, sizeof(time_text));
 
-    bool online = WiFiManager_IsConnected();
-    lv_color_t bg = state_bg_color(app_state);
+    const bool online = WiFiManager_IsConnected();
+    const display_state_style_t style = display_state_style(app_state);
 
-    lv_obj_set_style_bg_color(s_screen, bg, 0);
-    lv_obj_set_style_bg_color(s_top_bar, online ? lv_color_white() : lv_color_hex(0x676767), 0);
-    lv_obj_set_style_text_color(s_time_label, online ? lv_color_hex(0x1E1E1E) : lv_color_white(), 0);
-    lv_obj_set_style_text_color(s_network_label, online ? lv_color_hex(0x1E1E1E) : lv_color_white(), 0);
+    lv_obj_set_style_bg_color(s_screen, online ? style.bg_color : lv_color_hex(0x6F7680), 0);
+    update_online_styles(online);
 
     lv_label_set_text(s_time_label, time_text);
-    lv_label_set_text(s_network_label, online ? "已联网" : "离线");
-    if (online) {
-        lv_obj_add_flag(s_offline_banner, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_remove_flag(s_offline_banner, LV_OBJ_FLAG_HIDDEN);
-    }
-    lv_label_set_text(s_state_label, state_text(app_state));
-    lv_label_set_text(s_reason_label, build_short_reason(app_state, sensor_data, risk_result));
-    lv_label_set_text(s_prompt_label, state_prompt_text(app_state));
+    lv_label_set_text(s_network_label, LV_SYMBOL_WIFI);
+    lv_label_set_text(s_state_label, online ? style.state_text : "OFFLINE");
+    lv_obj_move_foreground(s_time_label);
+    lv_obj_move_foreground(s_network_label);
+    lv_obj_move_foreground(s_network_slash_line);
 
     lv_timer_handler();
     return ESP_OK;
