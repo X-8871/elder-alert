@@ -36,6 +36,7 @@ typedef enum {
     ALARM_CAUSE_NO_MOTION_TIMEOUT,
     ALARM_CAUSE_MQ2_LIGHT_TIMEOUT,
     ALARM_CAUSE_MQ2_HARD,
+    ALARM_CAUSE_MQ2_TEMP_RISE,
 } alarm_cause_t;
 
 typedef struct {
@@ -299,12 +300,28 @@ static bool low_light_obvious_activity(uint32_t current_ms, const sensor_hub_dat
                get_low_light_activity_sum_cm();
 }
 
+static bool no_motion_recovery_ready(uint32_t current_ms, const sensor_hub_data_t *sensor_data)
+{
+    if (sensor_data == NULL) {
+        return false;
+    }
+
+    bool activity_detected = (sensor_data->am312_ok && sensor_data->motion_detected) ||
+                             (sensor_data->ld2410b_ok && sensor_data->ld2410b_moving_target);
+    return activity_detected && distance_changed_often(current_ms);
+}
+
 static void update_rest_context(const sensor_hub_data_t *sensor_data,
                                 uint32_t current_ms,
                                 bool obvious_activity)
 {
     if (sensor_data == NULL || !sensor_data->bh1750_ok) {
         s_low_light_since_ms = 0;
+        if (s_rest_context_active) {
+            s_rest_context_active = false;
+            s_last_motion_tick = xTaskGetTickCount();
+            ESP_LOGW(TAG, "rest_context_exit_by_bh1750_fault");
+        }
         return;
     }
 
@@ -445,13 +462,21 @@ esp_err_t AppController_Process(const sensor_hub_data_t *sensor_data, const risk
     }
 
     if (s_current_state == APP_STATE_ALARM) {
-        if (risk_result->mq2_high_alarm || risk_result->mq2_temp_rise_alarm) {
+        if (risk_result->mq2_temp_rise_alarm) {
+            s_alarm_cause = ALARM_CAUSE_MQ2_TEMP_RISE;
+        } else if (risk_result->mq2_high_alarm) {
             s_alarm_cause = ALARM_CAUSE_MQ2_HARD;
         }
         if ((s_alarm_cause == ALARM_CAUSE_MQ2_HARD &&
              risk_result->mq2_clear_stable &&
              !risk_result->mq2_high_alarm &&
              !risk_result->mq2_temp_rise_alarm) ||
+            (s_alarm_cause == ALARM_CAUSE_MQ2_TEMP_RISE &&
+             risk_result->mq2_clear_stable &&
+             risk_result->temperature_clear_stable &&
+             !risk_result->mq2_high_alarm &&
+             !risk_result->mq2_temp_rise_alarm &&
+             !risk_result->high_temperature) ||
             (s_alarm_cause == ALARM_CAUSE_NO_MOTION_TIMEOUT &&
              !risk_result->no_motion_timeout) ||
             (s_alarm_cause == ALARM_CAUSE_MQ2_LIGHT_TIMEOUT &&
@@ -473,20 +498,32 @@ esp_err_t AppController_Process(const sensor_hub_data_t *sensor_data, const risk
         s_mq2_alarm_cooldown_until_ms = 0;
     }
 
-    if (risk_result->mq2_high_alarm || risk_result->mq2_temp_rise_alarm) {
+    if (risk_result->mq2_temp_rise_alarm) {
+        s_alarm_cause = ALARM_CAUSE_MQ2_TEMP_RISE;
+        return apply_state(APP_STATE_ALARM);
+    }
+
+    if (risk_result->mq2_high_alarm) {
         s_alarm_cause = ALARM_CAUSE_MQ2_HARD;
         return apply_state(APP_STATE_ALARM);
     }
 
     if (s_current_state == APP_STATE_REMIND) {
-        if (s_remind_cause == REMIND_CAUSE_NO_MOTION && !risk_result->no_motion_timeout) {
-            return apply_state(APP_STATE_NORMAL);
+        if (s_remind_cause == REMIND_CAUSE_NO_MOTION) {
+            if (no_motion_recovery_ready(current_ms, sensor_data)) {
+                s_last_motion_tick = xTaskGetTickCount();
+                return apply_state(APP_STATE_NORMAL);
+            }
+            return apply_state(APP_STATE_REMIND);
         }
         if (s_remind_cause == REMIND_CAUSE_HIGH_TEMP && !risk_result->high_temperature) {
             return apply_state(APP_STATE_NORMAL);
         }
-        if (s_remind_cause == REMIND_CAUSE_MQ2_LIGHT && risk_result->mq2_clear_stable) {
-            return apply_state(APP_STATE_NORMAL);
+        if (s_remind_cause == REMIND_CAUSE_MQ2_LIGHT) {
+            if (risk_result->mq2_clear_stable) {
+                return apply_state(APP_STATE_NORMAL);
+            }
+            return apply_state(APP_STATE_REMIND);
         }
     }
 

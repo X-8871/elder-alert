@@ -63,6 +63,7 @@ static uint32_t s_mq2_light_since_ms = 0;
 static uint32_t s_mq2_alarm_since_ms = 0;
 static uint32_t s_mq2_clear_since_ms = 0;
 static uint32_t s_high_temp_since_ms = 0;
+static uint32_t s_temp_clear_since_ms = 0;
 static temp_sample_t s_temp_history[TEMP_HISTORY_SIZE] = {0};
 static uint8_t s_temp_history_index = 0;
 
@@ -155,6 +156,26 @@ static bool evaluate_high_temperature(bool aht20_ok,
         return config->temp_confirm_ms == 0;
     }
     return (now_ms - s_high_temp_since_ms) >= config->temp_confirm_ms;
+}
+
+static bool evaluate_temperature_clear_stable(bool aht20_ok,
+                                              float temperature_c,
+                                              const risk_config_t *config,
+                                              uint32_t now_ms)
+{
+    if (!aht20_ok || config == NULL) {
+        s_temp_clear_since_ms = 0;
+        return false;
+    }
+    if (temperature_c >= config->heat_temp_c) {
+        s_temp_clear_since_ms = 0;
+        return false;
+    }
+    if (s_temp_clear_since_ms == 0) {
+        s_temp_clear_since_ms = now_ms;
+        return config->temp_confirm_ms == 0;
+    }
+    return (now_ms - s_temp_clear_since_ms) >= config->temp_confirm_ms;
 }
 
 static void update_temperature_history(float temperature_c, uint32_t now_ms)
@@ -252,6 +273,10 @@ void RiskEngine_Evaluate(const sensor_hub_data_t *data,
                                                          data->aht_temperature,
                                                          config,
                                                          context->now_ms);
+    result->temperature_clear_stable = evaluate_temperature_clear_stable(data->aht20_ok,
+                                                                         data->aht_temperature,
+                                                                         config,
+                                                                         context->now_ms);
 
     if (data->mq2_ok) {
         result->mq2_filtered_raw = update_mq2_filtered_raw(data->mq2_raw, config->mq2_filter_window);

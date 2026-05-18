@@ -23,12 +23,18 @@ const refs = {
   metricState: document.getElementById("metric-state"),
   metricTemperature: document.getElementById("metric-temperature"),
   metricTemperatureBar: document.getElementById("metric-temperature-bar"),
+  metricTemperatureThreshold: document.getElementById("metric-temperature-threshold"),
   metricHumidity: document.getElementById("metric-humidity"),
   metricHumidityBar: document.getElementById("metric-humidity-bar"),
+  metricHumidityThreshold: document.getElementById("metric-humidity-threshold"),
   metricLux: document.getElementById("metric-lux"),
   metricLuxBar: document.getElementById("metric-lux-bar"),
+  metricLuxThreshold: document.getElementById("metric-lux-threshold"),
   metricMq2: document.getElementById("metric-mq2"),
   metricMq2Bar: document.getElementById("metric-mq2-bar"),
+  metricMq2Threshold: document.getElementById("metric-mq2-threshold"),
+  metricLightScene: document.getElementById("metric-light-scene"),
+  metricLightSceneNote: document.getElementById("metric-light-scene-note"),
   metricMotion: document.getElementById("metric-motion"),
   metricMmwave: document.getElementById("metric-mmwave"),
   metricMmwaveDistance: document.getElementById("metric-mmwave-distance"),
@@ -57,6 +63,10 @@ const refs = {
   modeNoMotion: document.getElementById("mode-no-motion"),
   modeDemoTimeout: document.getElementById("mode-demo-timeout"),
   modeRealTimeout: document.getElementById("mode-real-timeout"),
+  modeThresholdTemperature: document.getElementById("mode-threshold-temperature"),
+  modeThresholdLux: document.getElementById("mode-threshold-lux"),
+  modeThresholdMq2: document.getElementById("mode-threshold-mq2"),
+  modeThresholdEscalation: document.getElementById("mode-threshold-escalation"),
   metricTick: document.getElementById("metric-tick"),
   metricReason: document.getElementById("metric-reason"),
   metricStateCard: document.getElementById("metric-state-card"),
@@ -91,10 +101,41 @@ const ALERTS_PAGE_SIZE = 6;
 const STALE_AFTER_MS = 18000;
 const OFFLINE_AFTER_MS = 45000;
 const RISK_THRESHOLDS = {
-  temperatureHighC: 35,
-  humidityHighPercent: 85,
-  lowLux: 30,
-  mq2WarnRaw: 1500,
+  humidityDisplayPercent: 100,
+};
+const RULE_PROFILES = {
+  REAL: {
+    modeLabel: "真实模式",
+    noMotionRemindMs: 5 * 60 * 1000,
+    remindEscalationMs: 30 * 60 * 1000,
+    temperatureHighC: 32,
+    temperatureDurationText: "持续 5 分钟",
+    temperatureCooldownText: "OK 后冷却 10 分钟",
+    enterRestLux: 20,
+    exitRestLux: 50,
+    mq2RemindRaw: 1200,
+    mq2RemindDurationText: "持续 10 秒",
+    mq2AlarmRaw: 1500,
+    mq2AlarmDurationText: "持续 20 秒",
+    mq2RecoverText: "回落并稳定 5 分钟",
+    escalationText: "无活动 / MQ2 轻度提醒 30 分钟无人响应升级 ALERT",
+  },
+  DEMO: {
+    modeLabel: "演示模式",
+    noMotionRemindMs: 30 * 1000,
+    remindEscalationMs: 15 * 1000,
+    temperatureHighC: 30,
+    temperatureDurationText: "持续 30 秒",
+    temperatureCooldownText: "OK 后冷却 1 分钟",
+    enterRestLux: 30,
+    exitRestLux: 60,
+    mq2RemindRaw: 1000,
+    mq2RemindDurationText: "持续 3 秒",
+    mq2AlarmRaw: 1300,
+    mq2AlarmDurationText: "持续 5 秒",
+    mq2RecoverText: "回落并稳定 10 秒",
+    escalationText: "无活动 / MQ2 轻度提醒 15 秒无人响应升级 ALERT",
+  },
 };
 const VOICE_MODE_META = {
   CARE: {
@@ -412,6 +453,40 @@ function normalizeVoiceMode(mode) {
   return VOICE_MODE_META[mode] ? mode : "CARE";
 }
 
+function getRuleProfile(runMode) {
+  return String(runMode || "").toUpperCase() === "REAL" ? RULE_PROFILES.REAL : RULE_PROFILES.DEMO;
+}
+
+function lightSceneInfo(luxValue, runMode) {
+  const profile = getRuleProfile(runMode);
+  const lux = Number(luxValue);
+  if (!Number.isFinite(lux)) {
+    return {
+      title: "等待光照数据",
+      note: "需要设备上报 lux 后，才能判断白天活动或夜晚睡眠场景。",
+    };
+  }
+
+  if (lux <= profile.enterRestLux) {
+    return {
+      title: "夜晚睡眠场景",
+      note: `当前光照较低（<= ${profile.enterRestLux} lx），系统会按休息场景抑制长时间无活动误报。`,
+    };
+  }
+
+  if (lux >= profile.exitRestLux) {
+    return {
+      title: "白天活动场景",
+      note: `当前光照充足（>= ${profile.exitRestLux} lx），系统按日间活动场景正常监测无活动风险。`,
+    };
+  }
+
+  return {
+    title: "过渡光照场景",
+    note: `当前光照位于 ${profile.enterRestLux}-${profile.exitRestLux} lx 之间，系统会结合持续时间和活动变化判断是否进入或退出休息场景。`,
+  };
+}
+
 function renderVoiceMode(mode, offlineReply = "", selectedMode = mode, deviceOffline = false) {
   const normalized = normalizeVoiceMode(mode);
   const meta = VOICE_MODE_META[normalized];
@@ -629,10 +704,16 @@ function renderLatestSnapshot(item) {
     refs.snapshotEmpty.hidden = false;
     refs.rawPayloadBox.textContent = "等待数据...";
     refs.metricReason.textContent = "-";
-    setSensorBar(refs.metricTemperatureBar, 0, RISK_THRESHOLDS.temperatureHighC);
-    setSensorBar(refs.metricHumidityBar, 0, RISK_THRESHOLDS.humidityHighPercent);
-    setSensorBar(refs.metricLuxBar, 0, RISK_THRESHOLDS.lowLux);
-    setSensorBar(refs.metricMq2Bar, 0, RISK_THRESHOLDS.mq2WarnRaw);
+    setSensorBar(refs.metricTemperatureBar, 0, RULE_PROFILES.DEMO.temperatureHighC);
+    setSensorBar(refs.metricHumidityBar, 0, RISK_THRESHOLDS.humidityDisplayPercent);
+    setSensorBar(refs.metricLuxBar, 0, RULE_PROFILES.DEMO.enterRestLux);
+    setSensorBar(refs.metricMq2Bar, 0, RULE_PROFILES.DEMO.mq2RemindRaw);
+    refs.metricTemperatureThreshold.textContent = "高温提醒 >= 32°C 持续 5 分钟";
+    refs.metricHumidityThreshold.textContent = "当前仅遥测展示，不单独触发风险";
+    refs.metricLuxThreshold.textContent = "休息场景 <= 20 lx；亮光退出 >= 50 lx";
+    refs.metricMq2Threshold.textContent = "提醒 >= 1200；告警 >= 1500";
+    refs.metricLightScene.textContent = "-";
+    refs.metricLightSceneNote.textContent = "根据当前光照判断白天活动或夜晚睡眠场景";
     refs.riskCategory.textContent = "-";
     renderMmwavePanel(null);
     renderHealthPanel(null);
@@ -643,15 +724,26 @@ function renderLatestSnapshot(item) {
 
   refs.snapshotEmpty.hidden = true;
   refs.snapshotGrid.hidden = false;
+  const profile = getRuleProfile(item.run_mode);
+  const lightScene = lightSceneInfo(item.lux, item.run_mode);
   refs.metricState.textContent = `${stateLabel(item.state)}/${riskLabel(item.risk_level)}`;
   refs.metricTemperature.textContent = formatNumber(item.temperature, "°C");
   refs.metricHumidity.textContent = formatNumber(item.humidity, "%");
   refs.metricLux.textContent = formatNumber(item.lux, "lx");
   refs.metricMq2.textContent = formatNumber(item.mq2_raw);
-  setSensorBar(refs.metricTemperatureBar, item.temperature, RISK_THRESHOLDS.temperatureHighC);
-  setSensorBar(refs.metricHumidityBar, item.humidity, RISK_THRESHOLDS.humidityHighPercent);
-  setSensorBar(refs.metricLuxBar, item.lux, RISK_THRESHOLDS.lowLux);
-  setSensorBar(refs.metricMq2Bar, item.mq2_raw, RISK_THRESHOLDS.mq2WarnRaw);
+  refs.metricTemperatureThreshold.textContent =
+    `高温提醒 >= ${profile.temperatureHighC}°C ${profile.temperatureDurationText}`;
+  refs.metricHumidityThreshold.textContent = "当前仅遥测展示，不单独触发风险";
+  refs.metricLuxThreshold.textContent =
+    `休息场景 <= ${profile.enterRestLux} lx；亮光退出 >= ${profile.exitRestLux} lx`;
+  refs.metricMq2Threshold.textContent =
+    `提醒 >= ${profile.mq2RemindRaw}；告警 >= ${profile.mq2AlarmRaw}`;
+  refs.metricLightScene.textContent = lightScene.title;
+  refs.metricLightSceneNote.textContent = lightScene.note;
+  setSensorBar(refs.metricTemperatureBar, item.temperature, profile.temperatureHighC);
+  setSensorBar(refs.metricHumidityBar, item.humidity, RISK_THRESHOLDS.humidityDisplayPercent);
+  setSensorBar(refs.metricLuxBar, item.lux, profile.enterRestLux);
+  setSensorBar(refs.metricMq2Bar, item.mq2_raw, profile.mq2RemindRaw);
   refs.metricMotion.textContent = formatBoolean(item.motion_detected);
   refs.metricMmwave.textContent = formatMmwaveState(item);
   refs.metricMmwaveDistance.textContent = formatMmwaveDistance(item);
@@ -787,13 +879,22 @@ function renderHealthPanel(item) {
 
 function renderModePanel(item) {
   const mode = formatValue(item?.run_mode);
+  const profile = getRuleProfile(mode);
   const modeText = mode === "REAL" ? "真实模式" : mode === "DEMO" ? "演示模式" : "未上报";
   refs.modeCurrent.textContent = modeText;
   refs.modeCurrent.className = `quiet-pill ${mode === "REAL" ? "state-normal" : mode === "DEMO" ? "state-remind" : "state-idle"}`;
   refs.modeCurrentDetail.textContent = modeText;
-  refs.modeNoMotion.textContent = formatMs(item?.no_motion_remind_ms);
+  refs.modeNoMotion.textContent = formatMs(item?.no_motion_remind_ms ?? profile.noMotionRemindMs);
   refs.modeDemoTimeout.textContent = formatMs(item?.remind_confirm_timeout_demo_ms ?? 15000);
   refs.modeRealTimeout.textContent = formatMs(item?.remind_confirm_timeout_real_ms ?? 300000);
+  refs.modeThresholdTemperature.textContent =
+    `>= ${profile.temperatureHighC}°C ${profile.temperatureDurationText}；${profile.temperatureCooldownText}`;
+  refs.modeThresholdLux.textContent =
+    `进入休息 <= ${profile.enterRestLux} lx；退出 >= ${profile.exitRestLux} lx`;
+  refs.modeThresholdMq2.textContent =
+    `提醒 >= ${profile.mq2RemindRaw} ${profile.mq2RemindDurationText}；告警 >= ${profile.mq2AlarmRaw} ${profile.mq2AlarmDurationText}`;
+  refs.modeThresholdEscalation.textContent =
+    `${profile.escalationText}；MQ2 恢复需 ${profile.mq2RecoverText}`;
 }
 
 function renderAlerts(items) {

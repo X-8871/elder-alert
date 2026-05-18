@@ -88,6 +88,7 @@ typedef struct {
     bool mq2_high_alarm;             /* MQ2 是否高危险持续异常 */
     bool mq2_temp_rise_alarm;        /* MQ2 轻度异常且温度明显上升 */
     bool mq2_clear_stable;           /* MQ2 是否已回落并稳定 */
+    bool temperature_clear_stable;   /* 温度是否已回落并稳定 */
     bool manual_sos;                 /* 是否手动 SOS */
     bool remind_timeout;             /* 提醒是否超时 */
     bool static_presence_no_motion;   /* 毫米波有人静止且长时间无明显活动 */

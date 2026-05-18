@@ -733,6 +733,20 @@ body.view-focused .data-workspace.is-view-active .data-panel {
   background: linear-gradient(180deg, var(--normal-bg) 0%, #fff 100%);
 }
 
+.metric-card-context {
+  border-color: #c7d9ea;
+  background: linear-gradient(180deg, #f7fbff 0%, #edf5ff 100%);
+}
+
+.metric-card-context strong {
+  font-size: clamp(22px, 1.9vw, 30px);
+  line-height: 1.2;
+}
+
+.metric-card-context small {
+  line-height: 1.5;
+}
+
 .metric-card-state strong {
   white-space: nowrap;
   font-size: clamp(24px, 2vw, 34px);
@@ -932,6 +946,10 @@ select {
   color: var(--muted);
   font-size: 14px;
   line-height: 1.55;
+}
+
+.threshold-detail-grid {
+  margin-top: 14px;
 }
 
 .mode-panel {
@@ -1436,11 +1454,7 @@ pre {
 
 body {
   color: var(--text);
-  background:
-    linear-gradient(90deg, rgba(23, 105, 224, 0.045) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(21, 154, 168, 0.04) 1px, transparent 1px),
-    #edf4f8;
-  background-size: 44px 44px;
+  background: #eef4f8;
   letter-spacing: 0;
 }
 
@@ -1459,12 +1473,13 @@ input {
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.72);
+  background: #f7fafc;
   box-shadow: var(--shadow);
 }
 
 .page-shell {
   padding: 0;
+  background: #f7fafc;
 }
 
 body.view-focused .app-frame {
@@ -1588,7 +1603,8 @@ button:hover {
 .panel {
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.9);
+  background: #ffffff;
+  background-image: none;
   box-shadow: var(--shadow-soft);
 }
 
@@ -1657,8 +1673,23 @@ button:hover {
 .event-field {
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--paper-soft);
+  background: #f7fafc;
+  background-image: none;
   box-shadow: none;
+}
+
+.data-workspace,
+.data-panel,
+.data-column,
+.telemetry-panel,
+.mmwave-panel,
+.health-panel,
+.mini-chart-panel,
+.metric-card,
+.alerts-list,
+.event-card,
+.risk-summary {
+  background-image: none !important;
 }
 
 .hero-facts div {
@@ -1759,14 +1790,19 @@ button:hover {
 
 .alerts-list {
   gap: 12px;
-  max-height: 640px;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
 }
 
 .event-card {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 16px;
-  background: var(--paper-soft);
+  background: #fffdfd;
   box-shadow: none;
 }
 
@@ -1789,6 +1825,19 @@ button:hover {
   gap: 12px;
 }
 
+.alerts-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.alerts-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #c7d4df;
+}
+
+.alerts-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .detail-grid div,
 .health-item {
   padding: 15px;
@@ -1800,6 +1849,10 @@ button:hover {
   padding: 13px 14px;
   background: var(--remind-bg);
   color: #5e451d;
+}
+
+.threshold-detail-grid div {
+  background: #f6fafc;
 }
 
 .voice-mode-card {
@@ -1908,7 +1961,7 @@ pre {
 .site-footer {
   grid-column: 1 / -1;
   margin: 18px 0 0;
-  border: 1px solid #17356d;
+  border: 0;
   border-radius: 8px;
   overflow: hidden;
   box-shadow: none;

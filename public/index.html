@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>居家安全看护面板</title>
-    <link rel="stylesheet" href="styles.css?v=20260516-1736" />
+    <link rel="stylesheet" href="styles.css?v=20260518-1143" />
   </head>
   <body>
     <div class="app-frame">
@@ -118,25 +118,30 @@
                 <span>环境温度</span>
                 <strong id="metric-temperature">-</strong>
                 <div class="threshold-bar" aria-hidden="true"><i id="metric-temperature-bar"></i><em>警戒值</em></div>
-                <small id="metric-temperature-threshold">警戒值 35°C</small>
+                <small id="metric-temperature-threshold">高温提醒 >= 32°C 持续 5 分钟</small>
               </article>
               <article class="metric-card sensor-bar-card">
                 <span>环境湿度</span>
                 <strong id="metric-humidity">-</strong>
-                <div class="threshold-bar" aria-hidden="true"><i id="metric-humidity-bar"></i><em>警戒值</em></div>
-                <small id="metric-humidity-threshold">警戒值 85%</small>
+                <div class="threshold-bar" aria-hidden="true"><i id="metric-humidity-bar"></i><em>遥测参考</em></div>
+                <small id="metric-humidity-threshold">当前仅遥测展示，不单独触发风险</small>
               </article>
               <article class="metric-card sensor-bar-card">
                 <span>光照强度</span>
                 <strong id="metric-lux">-</strong>
                 <div class="threshold-bar" aria-hidden="true"><i id="metric-lux-bar"></i><em>低光警戒</em></div>
-                <small id="metric-lux-threshold">低光警戒 30 lx</small>
+                <small id="metric-lux-threshold">休息场景 <= 20 lx；亮光退出 >= 50 lx</small>
               </article>
               <article class="metric-card sensor-bar-card">
                 <span>烟雾浓度</span>
                 <strong id="metric-mq2">-</strong>
                 <div class="threshold-bar" aria-hidden="true"><i id="metric-mq2-bar"></i><em>警戒值</em></div>
-                <small id="metric-mq2-threshold">警戒值 1500</small>
+                <small id="metric-mq2-threshold">提醒 >= 1200；告警 >= 1500</small>
+              </article>
+              <article class="metric-card metric-card-context">
+                <span>场景提醒</span>
+                <strong id="metric-light-scene">-</strong>
+                <small id="metric-light-scene-note">根据当前光照判断白天活动或夜晚睡眠场景</small>
               </article>
               <article class="metric-card">
                 <span>人体活动</span>
@@ -257,13 +262,19 @@
             </div>
             <span id="mode-current" class="quiet-pill">未上报</span>
           </div>
-          <div class="detail-grid mode-grid">
-            <div><span>当前模式</span><strong id="mode-current-detail">-</strong></div>
-            <div><span>无活动提醒阈值</span><strong id="mode-no-motion">-</strong></div>
-            <div><span>演示确认超时</span><strong id="mode-demo-timeout">15 秒</strong></div>
-            <div><span>真实确认超时</span><strong id="mode-real-timeout">5 分钟</strong></div>
-          </div>
+            <div class="detail-grid mode-grid">
+              <div><span>当前模式</span><strong id="mode-current-detail">-</strong></div>
+              <div><span>无活动提醒阈值</span><strong id="mode-no-motion">-</strong></div>
+              <div><span>演示确认超时</span><strong id="mode-demo-timeout">15 秒</strong></div>
+              <div><span>真实确认超时</span><strong id="mode-real-timeout">5 分钟</strong></div>
+            </div>
           <p class="mode-note">当前 15 秒升级用于比赛演示；真实居家运行建议使用分钟级确认时间，并需按现场需求确认。</p>
+          <div class="detail-grid threshold-detail-grid">
+            <div><span>高温提醒</span><strong id="mode-threshold-temperature">-</strong></div>
+            <div><span>休息场景光照</span><strong id="mode-threshold-lux">-</strong></div>
+            <div><span>MQ2 提醒 / 告警</span><strong id="mode-threshold-mq2">-</strong></div>
+            <div><span>升级与恢复</span><strong id="mode-threshold-escalation">-</strong></div>
+          </div>
           <dl class="system-list merged-system-list">
             <div>
               <dt>云端服务</dt>
@@ -345,6 +356,6 @@
       </footer>
     </div>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=20260518-1143"></script>
   </body>
 </html>

@@ -107,7 +107,7 @@ static display_state_style_t display_state_style(app_state_t state)
         };
     case APP_STATE_ALARM:
         return (display_state_style_t){
-            .state_text = "ALERT",
+            .state_text = "ALARM",
             .bg_color = lv_color_hex(0xD64633),
         };
     case APP_STATE_SOS:
