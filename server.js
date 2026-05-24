@@ -10,6 +10,8 @@ const latestPath = "/api/latest";
 const speechTranscribePath = "/api/speech/transcribe";
 const speechLatestPath = "/api/speech/latest";
 const speechReplyAudioPath = "/api/speech/reply-audio";
+const voicePromptsPath = "/api/voice-prompts";
+const voicePromptAudioPath = "/api/voice-prompts/audio";
 const maxAlerts = 50;
 const maxSpeechRecords = 10;
 const maxSpeechAudioBytes = 600 * 1024;
@@ -50,6 +52,80 @@ const alerts = [];
 const speechRecords = [];
 let latestSnapshot = null;
 let latestSpeech = null;
+let voicePrompts = [];
+
+const defaultVoicePromptItems = [
+  {
+    event_key: "no_motion_remind",
+    label: "NORMAL -> REMIND / 长时间无活动",
+    tts_text: "长时间未检测到活动，请按确认键报平安。",
+    enabled: true,
+    cooldown_ms: 30000,
+  },
+  {
+    event_key: "high_temp_remind",
+    label: "NORMAL -> REMIND / 高温",
+    tts_text: "室内温度偏高，请注意通风、降温和补水。",
+    enabled: true,
+    cooldown_ms: 30000,
+  },
+  {
+    event_key: "mq2_mild_remind",
+    label: "NORMAL -> REMIND / MQ2 轻度异常",
+    tts_text: "检测到烟雾或气体异常，请立即检查现场情况。",
+    enabled: true,
+    cooldown_ms: 30000,
+  },
+  {
+    event_key: "no_motion_timeout_alarm",
+    label: "REMIND -> ALARM / 无活动提醒超时",
+    tts_text: "长时间未收到确认，已升级报警，请立即查看。",
+    enabled: true,
+    cooldown_ms: 15000,
+  },
+  {
+    event_key: "mq2_mild_timeout_alarm",
+    label: "REMIND -> ALARM / MQ2 轻度异常提醒超时",
+    tts_text: "烟雾或气体异常持续存在，已升级报警，请立即处理。",
+    enabled: true,
+    cooldown_ms: 15000,
+  },
+  {
+    event_key: "mq2_danger_alarm",
+    label: "NORMAL/REMIND -> ALARM / MQ2 高危险",
+    tts_text: "检测到高风险烟雾或气体异常，请立即远离并检查现场。",
+    enabled: true,
+    cooldown_ms: 10000,
+  },
+  {
+    event_key: "mq2_temp_alarm",
+    label: "NORMAL/REMIND -> ALARM / MQ2 异常并伴随温升",
+    tts_text: "检测到烟雾异常并伴随升温，请立即处理并注意安全。",
+    enabled: true,
+    cooldown_ms: 10000,
+  },
+  {
+    event_key: "manual_sos",
+    label: "任意状态 -> SOS / 用户主动求助",
+    tts_text: "已发出紧急求助，请保持镇定并等待帮助。",
+    enabled: false,
+    cooldown_ms: 0,
+  },
+  {
+    event_key: "user_confirm_normal",
+    label: "REMIND/ALARM/SOS -> NORMAL / 用户确认解除",
+    tts_text: "已恢复正常监测。",
+    enabled: true,
+    cooldown_ms: 5000,
+  },
+  {
+    event_key: "risk_cleared_normal",
+    label: "REMIND -> NORMAL / 风险自行解除",
+    tts_text: "风险已解除，已恢复正常监测。",
+    enabled: true,
+    cooldown_ms: 5000,
+  },
+];
 
 const requiredFields = [
   "device_id",
@@ -60,7 +136,6 @@ const requiredFields = [
   "humidity",
   "lux",
   "mq2_raw",
-  "motion_detected",
   "timestamp_ms",
 ];
 
@@ -180,6 +255,58 @@ function normalizeVoiceMode(value) {
   return mode === "OFFLINE" || manualVoiceModes.has(mode) ? mode : "CARE";
 }
 
+function normalizeVoicePromptItem(item, fallback = {}) {
+  const eventKey = String(item?.event_key || fallback.event_key || "").trim();
+  if (!eventKey) {
+    return null;
+  }
+
+  const label = String(item?.label || fallback.label || "").trim();
+  const text = String(item?.tts_text || fallback.tts_text || "").trim();
+  const cooldown = Number(item?.cooldown_ms ?? fallback.cooldown_ms ?? 0);
+  const updatedAt = String(item?.updated_at || fallback.updated_at || new Date().toISOString());
+
+  return {
+    event_key: eventKey,
+    label,
+    tts_text: text,
+    enabled: Boolean(item?.enabled ?? fallback.enabled),
+    cooldown_ms: Number.isFinite(cooldown) && cooldown >= 0 ? Math.round(cooldown) : 0,
+    updated_at: updatedAt,
+  };
+}
+
+function buildDefaultVoicePrompts() {
+  return defaultVoicePromptItems.map((item) =>
+    normalizeVoicePromptItem(
+      {
+        ...item,
+        updated_at: new Date().toISOString(),
+      },
+      item,
+    )
+  );
+}
+
+function mergeVoicePrompts(storedItems) {
+  const storedMap = new Map(
+    Array.isArray(storedItems)
+      ? storedItems
+          .map((item) => normalizeVoicePromptItem(item, item))
+          .filter(Boolean)
+          .map((item) => [item.event_key, item])
+      : []
+  );
+
+  return defaultVoicePromptItems.map((item) =>
+    normalizeVoicePromptItem(storedMap.get(item.event_key) || item, item)
+  );
+}
+
+function getVoicePromptByEventKey(eventKey) {
+  return voicePrompts.find((item) => item.event_key === eventKey) || null;
+}
+
 function isDeviceOffline() {
   if (!latestSnapshot?.received_at) {
     return true;
@@ -223,7 +350,6 @@ function getLatestDeviceContext() {
     `湿度: ${latestSnapshot.humidity ?? "-"}%`,
     `光照: ${latestSnapshot.lux ?? "-"}lx`,
     `MQ2: ${latestSnapshot.mq2_raw ?? "-"}`,
-    `人体活动: ${latestSnapshot.motion_detected ?? "-"}`,
     `毫米波有效: ${latestSnapshot.ld2410b_ok ?? "-"}`,
     `毫米波存在: ${latestSnapshot.ld2410b_presence ?? "-"}`,
     `毫米波运动: ${latestSnapshot.ld2410b_moving_target ?? "-"}`,
@@ -741,6 +867,7 @@ function ensureDataDir() {
 function loadStore() {
   try {
     ensureDataDir();
+    voicePrompts = buildDefaultVoicePrompts();
     if (!fs.existsSync(storePath)) {
       return;
     }
@@ -763,6 +890,7 @@ function loadStore() {
     latestSpeech = parsed.latestSpeech && typeof parsed.latestSpeech === "object"
       ? parsed.latestSpeech
       : null;
+    voicePrompts = mergeVoicePrompts(parsed.voicePrompts);
   } catch (error) {
     console.warn(`[store] failed to load ${storePath}: ${error.message}`);
   }
@@ -777,6 +905,7 @@ function saveStore() {
       alerts,
       latestSpeech,
       speechRecords,
+      voicePrompts,
     };
     fs.writeFileSync(storePath, JSON.stringify(payload, null, 2), "utf8");
   } catch (error) {
@@ -853,6 +982,57 @@ app.post("/api/voice-mode", requireDashboardAuth, (req, res) => {
   });
 });
 
+app.get(voicePromptsPath, requireDashboardAuth, (req, res) => {
+  res.json({
+    ok: true,
+    items: voicePrompts,
+  });
+});
+
+app.post(voicePromptsPath, requireDashboardAuth, (req, res) => {
+  const inputItems = Array.isArray(req.body?.items) ? req.body.items : null;
+  if (!inputItems || inputItems.length === 0) {
+    return res.status(400).json({ ok: false, message: "items is required" });
+  }
+
+  const currentMap = new Map(voicePrompts.map((item) => [item.event_key, item]));
+  const nextItems = [...voicePrompts];
+  for (const inputItem of inputItems) {
+    const currentItem = currentMap.get(String(inputItem?.event_key || "").trim());
+    if (!currentItem) {
+      return res.status(400).json({
+        ok: false,
+        message: `unknown event_key: ${String(inputItem?.event_key || "")}`,
+      });
+    }
+
+    const merged = normalizeVoicePromptItem(
+      {
+        ...currentItem,
+        ...inputItem,
+        updated_at: new Date().toISOString(),
+      },
+      currentItem,
+    );
+    if (!merged?.tts_text) {
+      return res.status(400).json({
+        ok: false,
+        message: `tts_text is required for ${currentItem.event_key}`,
+      });
+    }
+
+    const index = nextItems.findIndex((item) => item.event_key === currentItem.event_key);
+    nextItems[index] = merged;
+  }
+
+  voicePrompts = nextItems;
+  saveStore();
+  return res.json({
+    ok: true,
+    items: voicePrompts,
+  });
+});
+
 app.get("/", requireDashboardAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
@@ -881,6 +1061,8 @@ app.get("/api/status", requireDashboardAuth, (req, res) => {
     speechTranscribePath,
     speechLatestPath,
     speechReplyAudioPath,
+    voicePromptsPath,
+    voicePromptAudioPath,
     speechAsrConfigured: hasTencentAsrConfig(),
     speechAsrEngine: tencentAsrConfig.engine || "16k_zh",
     aiReplyConfigured: hasAiReplyConfig(),
@@ -922,6 +1104,43 @@ app.get(speechLatestPath, requireDashboardAuth, (req, res) => {
     latest: latestSpeech,
     records: speechRecords,
   });
+});
+
+app.get(voicePromptAudioPath, requireDashboardOrDeviceToken, async (req, res) => {
+  try {
+    const eventKey = String(req.query?.event_key || "").trim();
+    if (!eventKey) {
+      return res.status(400).json({ ok: false, message: "event_key is required" });
+    }
+
+    const promptItem = getVoicePromptByEventKey(eventKey);
+    if (!promptItem) {
+      return res.status(404).json({ ok: false, message: "prompt_not_found" });
+    }
+    if (!promptItem.enabled) {
+      return res.status(409).json({ ok: false, message: "prompt_disabled" });
+    }
+    if (!promptItem.tts_text) {
+      return res.status(409).json({ ok: false, message: "prompt_text_empty" });
+    }
+
+    const audioBuffer = await generateReplyAudio(promptItem.tts_text);
+    res.set({
+      "Content-Type": mimeTypeForAudioFormat(ttsConfig.format),
+      "Content-Length": audioBuffer.length,
+      "Cache-Control": "no-store",
+      "X-TTS-Model": ttsConfig.model,
+      "X-TTS-Format": ttsConfig.format,
+      "X-Voice-Prompt-Key": promptItem.event_key,
+    });
+    return res.status(200).send(audioBuffer);
+  } catch (error) {
+    console.warn(`[voice-prompt-tts] failed: ${describeError(error)}`);
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: describeError(error),
+    });
+  }
 });
 
 app.get(speechReplyAudioPath, requireDashboardOrDeviceToken, async (req, res) => {
@@ -1062,6 +1281,7 @@ app.listen(port, () => {
   console.log(`Local dashboard running at http://localhost:${port}`);
   console.log(`POST alerts to http://localhost:${port}${alertPath}`);
   console.log(`POST speech audio to http://localhost:${port}${speechTranscribePath}`);
+  console.log(`GET voice prompts at http://localhost:${port}${voicePromptsPath}`);
   console.log(`[store] using ${storePath}`);
   console.log(`[auth] device token ${deviceToken ? "enabled" : "disabled"}`);
   console.log(`[speech] Tencent ASR ${hasTencentAsrConfig() ? "configured" : "not configured"}`);

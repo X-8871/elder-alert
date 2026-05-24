@@ -1,6 +1,19 @@
 /**
  * @file MAX98357A.c
  * @brief MAX98357A I2S 数字功放 BSP 驱动实现。
+ *
+ * 【学弟必读：单声道转立体声为什么需要复制？】
+ * I2S 协议按"左右声道交替"传输数据：一个 WS 周期包含 1 个左声道采样 + 1 个右声道采样。
+ * 本项目只有单声道音频，但 MAX98357A 的 I2S 输入仍然期望立体声格式。
+ * 因此每次写入时，我们把每个单声道采样复制一份到右声道：
+ *   立体声输出 = [sample_L, sample_R] = [mono_sample, mono_sample]
+ * 这样左右声道都能听到同样的声音。
+ *
+ * 【SD 引脚的控制时序】
+ * - 播放前：拉高 SD → 功放进入工作状态
+ * - 播放中：持续输出 I2S 数据
+ * - 播放后：拉低 SD → 功放关闭，消除空闲时的底噪/嗡嗡声
+ * 这就是为什么 main.c 启动早期先把 GPIO21 拉低（静音）。
  */
 
 #include "BSP_MAX98357A.h"
@@ -12,10 +25,10 @@
 #include "esp_log.h"
 
 static const char *TAG = "BSP_MAX98357A";
-static i2s_chan_handle_t s_tx_chan = NULL;
+static i2s_chan_handle_t s_tx_chan = NULL;  /* I2S 发送通道句柄 */
 static bool s_initialized = false;
 static uint32_t s_sample_rate_hz = BSP_MAX98357A_DEFAULT_SAMPLE_RATE_HZ;
-static gpio_num_t s_sd_gpio = -1;
+static gpio_num_t s_sd_gpio = -1;           /* SD 引脚，-1 表示未使用 */
 
 bool BSP_MAX98357A_IsInitialized(void)
 {
@@ -35,18 +48,21 @@ esp_err_t BSP_MAX98357A_Init(const bsp_max98357a_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
 
+    /* 1. 创建 I2S TX 通道 */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = BSP_MAX98357A_DEFAULT_DMA_DESC_NUM;
     chan_cfg.dma_frame_num = BSP_MAX98357A_DEFAULT_DMA_FRAME_NUM;
 
-    esp_err_t ret = i2s_new_channel(&chan_cfg, &s_tx_chan, NULL);
+    esp_err_t ret = i2s_new_channel(&chan_cfg, &s_tx_chan, NULL);  /* TX=s_tx_chan, RX=NULL */
     if (ret != ESP_OK) {
         return ret;
     }
 
+    /* 2. 配置标准 I2S TX 模式：16kHz, 16-bit, 立体声 */
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(config->sample_rate_hz),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
+                                                         I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = config->bclk_gpio,
@@ -78,20 +94,18 @@ esp_err_t BSP_MAX98357A_Init(const bsp_max98357a_config_t *config)
     s_sample_rate_hz = config->sample_rate_hz;
     s_initialized = true;
 
+    /* 3. 如果指定了 SD 引脚，初始化为输出并拉高（打开功放） */
     if (config->sd_gpio >= 0) {
         s_sd_gpio = config->sd_gpio;
         gpio_reset_pin(s_sd_gpio);
         gpio_set_direction(s_sd_gpio, GPIO_MODE_OUTPUT);
-        gpio_set_level(s_sd_gpio, 1);
+        gpio_set_level(s_sd_gpio, 1);  /* 高电平 = 功放工作 */
     }
 
     ESP_LOGI(TAG,
              "init success: bclk_gpio=%d ws_gpio=%d dout_gpio=%d sd_gpio=%d sample_rate=%" PRIu32,
-             config->bclk_gpio,
-             config->ws_gpio,
-             config->data_out_gpio,
-             config->sd_gpio,
-             config->sample_rate_hz);
+             config->bclk_gpio, config->ws_gpio, config->data_out_gpio,
+             config->sd_gpio, config->sample_rate_hz);
     return ESP_OK;
 }
 
@@ -107,8 +121,9 @@ esp_err_t BSP_MAX98357A_Deinit(void)
     s_initialized = false;
     s_sample_rate_hz = BSP_MAX98357A_DEFAULT_SAMPLE_RATE_HZ;
 
+    /* 拉低 SD 引脚 → 功放进入关断模式，消除空闲噪声 */
     if (s_sd_gpio >= 0) {
-        gpio_set_level(s_sd_gpio, 0);
+        gpio_set_level(s_sd_gpio, 0);  /* 低电平 = 关断 */
     }
 
     if (ret != ESP_OK) {
@@ -126,18 +141,21 @@ esp_err_t BSP_MAX98357A_WriteMonoSamples(const int16_t *samples, size_t sample_c
         return ESP_ERR_INVALID_ARG;
     }
 
-    int16_t stereo[BSP_MAX98357A_DEFAULT_DMA_FRAME_NUM * 2U] = {0};
+    /* 分批写入：每次最多 DMA_FRAME_NUM 个采样，避免单次 DMA 太大 */
+    int16_t stereo[BSP_MAX98357A_DEFAULT_DMA_FRAME_NUM * 2U];
     size_t written_samples = 0;
+
     while (written_samples < sample_count) {
         size_t batch_samples = sample_count - written_samples;
         if (batch_samples > BSP_MAX98357A_DEFAULT_DMA_FRAME_NUM) {
             batch_samples = BSP_MAX98357A_DEFAULT_DMA_FRAME_NUM;
         }
 
+        /* 单声道 → 立体声：每个采样复制到左右两声道 */
         for (size_t i = 0; i < batch_samples; ++i) {
             int16_t sample = samples[written_samples + i];
-            stereo[(i * 2U) + 0U] = sample;
-            stereo[(i * 2U) + 1U] = sample;
+            stereo[(i * 2U) + 0U] = sample;  /* 左声道 */
+            stereo[(i * 2U) + 1U] = sample;  /* 右声道 */
         }
 
         size_t bytes_written = 0;
@@ -167,11 +185,12 @@ esp_err_t BSP_MAX98357A_PlayTone(uint32_t frequency_hz, uint32_t duration_ms, in
         return ESP_ERR_INVALID_ARG;
     }
 
-    int16_t samples[BSP_MAX98357A_DEFAULT_DMA_FRAME_NUM] = {0};
+    /* 方波生成：每个半周期切换一次正负幅度 */
+    int16_t samples[BSP_MAX98357A_DEFAULT_DMA_FRAME_NUM];
     const size_t total_samples = ((size_t)s_sample_rate_hz * duration_ms) / 1000U;
     uint32_t half_period_samples = s_sample_rate_hz / (frequency_hz * 2U);
     if (half_period_samples == 0U) {
-        half_period_samples = 1U;
+        half_period_samples = 1U;  /* 频率太高时至少 1 个采样 */
     }
 
     size_t generated = 0;
@@ -181,6 +200,7 @@ esp_err_t BSP_MAX98357A_PlayTone(uint32_t frequency_hz, uint32_t duration_ms, in
             batch_samples = BSP_MAX98357A_DEFAULT_DMA_FRAME_NUM;
         }
 
+        /* 填充方波：前半周期正幅度，后半周期负幅度 */
         for (size_t i = 0; i < batch_samples; ++i) {
             size_t sample_index = generated + i;
             bool high = ((sample_index / half_period_samples) % 2U) == 0U;
@@ -205,7 +225,10 @@ esp_err_t BSP_MAX98357A_PlaySilence(uint32_t duration_ms)
         return ESP_ERR_INVALID_ARG;
     }
 
-    int16_t samples[BSP_MAX98357A_DEFAULT_DMA_FRAME_NUM] = {0};
+    /* 静音就是一直输出全 0 采样 */
+    int16_t samples[BSP_MAX98357A_DEFAULT_DMA_FRAME_NUM];
+    memset(samples, 0, sizeof(samples));
+
     size_t remaining = ((size_t)s_sample_rate_hz * duration_ms) / 1000U;
     while (remaining > 0U) {
         size_t batch_samples = remaining;

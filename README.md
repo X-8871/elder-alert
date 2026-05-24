@@ -11,7 +11,7 @@ Repository workflow verified by author: 2026-05-10
 
 - **本地闭环优先**：断网时仍能完成传感器采集、风险判断、声光提醒、确认解除和 SOS 求助。
 - **状态机清晰可解释**：使用 `NORMAL / REMIND / ALARM / SOS` 四态模型，适合答辩演示、工程排查和后续产品化扩展。
-- **多传感器融合**：接入温湿度、气压、光照、MQ-2 烟雾/气体、AM312 人体活动检测，为居家异常判断提供基础数据。
+- **多传感器融合**：接入温湿度、光照、MQ-2 烟雾/气体和 LD2410B 毫米波人体存在检测，为居家异常判断提供基础数据。
 - **云端留痕与网页展示**：ESP32-S3 通过 HTTP 上报事件和周期遥测，Node.js + Express 服务提供网页面板查看最新状态、告警记录和语音识别结果。
 - **语音交互雏形已打通**：INMP441 I2S 麦克风完成采样验证，GPIO17 录音键可触发短音频上传到云端 ASR；MAX98357A 已完成本地语音提示，当前代码已预留云端 AI/TTS 回复播放路径。
 - **可持续演进**：后续可接入 LD2410B 毫米波人体存在检测、MAX98357A 语音播放、TTS、AI 回复、可穿戴健康趋势数据等能力。
@@ -21,7 +21,7 @@ Repository workflow verified by author: 2026-05-10
 ### 端侧固件
 
 - ESP32-S3 + ESP-IDF 工程结构
-- AHT20 / BMP280 / BH1750 / MQ-2 / AM312 采集
+- AHT20 / BH1750 / MQ-2 / LD2410B 采集
 - `RiskEngine` 风险判断与中文可解释原因
 - `AppController` 状态机：`NORMAL / REMIND / ALARM / SOS`
 - LED + 蜂鸣器本地声光提醒
@@ -73,7 +73,6 @@ GPIO17 录音键
 | I2C SDA | GPIO4 |
 | I2C SCL | GPIO5 |
 | MQ-2 AO | GPIO1 |
-| AM312 OUT | GPIO6 |
 | 确认键 | GPIO7 |
 | SOS 键 | GPIO8 |
 | 蜂鸣器 | GPIO9 |

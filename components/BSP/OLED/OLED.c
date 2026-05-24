@@ -1,9 +1,25 @@
 /**
  * @file OLED.c
- * @brief SSD1306 128×64 OLED 显示驱动实现，I2C 通信，内置 5×7 ASCII 字模。
+ * @brief SSD1306 128×64 OLED 显示驱动实现——I2C 通信，内置 5×7 ASCII 字模。
  *
- * 使用页寻址帧缓冲区（128×64/8 = 1024 字节），通过 esp_lcd 组件操作 SSD1306 控制器。
- * 字模表覆盖数字、大写字母和少量符号，不支持中文和小写字母。
+ * 【学弟必读：字模数据是怎么来的？】
+ * 下面 s_glyphs[] 数组定义了每个字符对应的 7×5 像素点阵。
+ * 例如字符 'A' 的 7 行数据（二进制）：
+ *   0x04 = 0 0 1 0 0     →     ██
+ *   0x0A = 0 1 0 1 0     →    █ █
+ *   0x11 = 1 0 0 0 1     →   █   █
+ *   0x11 = 1 0 0 0 1     →   █   █
+ *   0x1F = 1 1 1 1 1     →   █████
+ *   0x11 = 1 0 0 0 1     →   █   █
+ *   0x11 = 1 0 0 0 1     →   █   █
+ * 每字节的高 5 bit 有效（因为字宽是 5 列），低 3 bit 被忽略。
+ *
+ * 当前字模表覆盖：数字 0-9、大写 A-Z、空格 % - . / :
+ * 不支持小写字母和中文（那是 TFT+LVGL 的活）。
+ *
+ * 【esp_lcd 框架】
+ * ESP-IDF 提供了统一的 esp_lcd 框架来操作各种 LCD/OLED 面板。
+ * 使用 spi_lcd 框架的好处是不需要自己写 SSD1306 的初始化序列和命令。
  */
 
 #include "BSP_OLED.h"
@@ -13,17 +29,18 @@
 
 #include "BSP_I2C.h"
 #include "i2cdev.h"
-#include "esp_lcd_io_i2c.h"
-#include "esp_lcd_panel_io.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_ssd1306.h"
+#include "esp_lcd_io_i2c.h"          /* I2C 接口的 LCD IO */
+#include "esp_lcd_panel_io.h"        /* LCD 面板 IO 抽象 */
+#include "esp_lcd_panel_ops.h"       /* LCD 面板操作（reset/init/display on） */
+#include "esp_lcd_panel_ssd1306.h"   /* SSD1306 专用面板驱动 */
 #include "esp_log.h"
 
-#define BSP_OLED_I2C_ADDRESS 0x3C
+#define BSP_OLED_I2C_ADDRESS 0x3C   /* SSD1306 默认 I2C 地址 */
 
+/** 字模数据结构：字符 → 7 行像素数据 */
 typedef struct {
     char ch;
-    uint8_t rows[7];
+    uint8_t rows[7];  /* 每行 5 有效 bit（在 7 字节的高位） */
 } oled_glyph_t;
 
 static const char *TAG = "BSP_OLED";
@@ -31,10 +48,11 @@ static const char *TAG = "BSP_OLED";
 static esp_lcd_panel_io_handle_t s_io = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static bool s_initialized = false;
-static uint8_t s_framebuffer[BSP_OLED_WIDTH * BSP_OLED_HEIGHT / 8];
+static uint8_t s_framebuffer[BSP_OLED_WIDTH * BSP_OLED_HEIGHT / 8];  /* 1024 字节 */
 
+/* ---- 5×7 ASCII 字模表 ---- */
 static const oled_glyph_t s_glyphs[] = {
-    {' ', {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {' ', {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},  /* 空格外观为空 */
     {'%', {0x11, 0x02, 0x04, 0x08, 0x11, 0x00, 0x00}},
     {'-', {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00}},
     {'.', {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C}},
@@ -71,6 +89,7 @@ static const oled_glyph_t s_glyphs[] = {
     {'W', {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A}},
 };
 
+/** 在字模表中查找字符，找不到时返回空格 */
 static const oled_glyph_t *find_glyph(char ch)
 {
     size_t glyph_count = sizeof(s_glyphs) / sizeof(s_glyphs[0]);
@@ -79,16 +98,17 @@ static const oled_glyph_t *find_glyph(char ch)
             return &s_glyphs[i];
         }
     }
-
-    return &s_glyphs[0];
+    return &s_glyphs[0];  /* 返回空格 */
 }
 
+/** 在帧缓冲区中设置/清除一个像素 */
 static void set_pixel(uint8_t x, uint8_t y, bool on)
 {
     if (x >= BSP_OLED_WIDTH || y >= BSP_OLED_HEIGHT) {
         return;
     }
 
+    /* SSD1306 页寻址：每 8 行组成一个"页"，同一列的 8 个像素存一个字节 */
     size_t index = x + ((size_t)(y / 8U) * BSP_OLED_WIDTH);
     uint8_t bit = 1U << (y % 8U);
     if (on) {
@@ -98,6 +118,7 @@ static void set_pixel(uint8_t x, uint8_t y, bool on)
     }
 }
 
+/** 清除指定行区域的像素 */
 static void clear_line(uint8_t line_index)
 {
     uint8_t y_start = line_index * BSP_OLED_LINE_HEIGHT;
@@ -110,18 +131,21 @@ static void clear_line(uint8_t line_index)
     }
 }
 
+/** 在指定位置绘制一个 5×7 字符 */
 static void draw_char(uint8_t x, uint8_t y, char ch)
 {
     const oled_glyph_t *glyph = find_glyph(ch);
 
     for (uint8_t row = 0; row < 7; ++row) {
         for (uint8_t col = 0; col < 5; ++col) {
+            /* 字模数据在高位（bit4→col0, bit3→col1, ... bit0→col4） */
             bool pixel_on = (glyph->rows[row] & (1U << (4U - col))) != 0U;
             set_pixel((uint8_t)(x + col), (uint8_t)(y + row), pixel_on);
         }
     }
 }
 
+/** 在指定行号绘制一行文本 */
 static void draw_line_text(uint8_t line_index, const char *text)
 {
     clear_line(line_index);
@@ -130,14 +154,14 @@ static void draw_line_text(uint8_t line_index, const char *text)
         return;
     }
 
-    uint8_t y = (uint8_t)(line_index * BSP_OLED_LINE_HEIGHT + 4U);
-    uint8_t x = 1U;
+    uint8_t y = (uint8_t)(line_index * BSP_OLED_LINE_HEIGHT + 4U);  /* 行内纵向偏移 4 像素 */
+    uint8_t x = 1U;  /* 左边距 1 像素 */
 
     for (size_t i = 0; text[i] != '\0' && i < BSP_OLED_MAX_LINE_CHARS; ++i) {
         draw_char(x, y, text[i]);
-        x = (uint8_t)(x + 6U);
+        x = (uint8_t)(x + 6U);  /* 字符宽 5 + 间距 1 = 6 */
         if (x + 5U >= BSP_OLED_WIDTH) {
-            break;
+            break;  /* 超出屏幕宽度，不再绘制 */
         }
     }
 }
@@ -151,19 +175,21 @@ esp_err_t BSP_OLED_Init(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* 1. 配置 I2C 接口作为 LCD 面板 IO */
     esp_lcd_panel_io_i2c_config_t io_config = {
         .dev_addr = BSP_OLED_I2C_ADDRESS,
-        .control_phase_bytes = 1,
-        .dc_bit_offset = 6,
+        .control_phase_bytes = 1,    /* SSD1306 需要 1 字节控制阶段（命令/数据标识） */
+        .dc_bit_offset = 6,          /* 控制字节的第 6 位 = D/C# 标识 */
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
         .flags = {
-            .dc_low_on_data = 0,
+            .dc_low_on_data = 0,     /* D/C# 位 = 0 表示命令，= 1 表示数据 */
             .disable_control_phase = 0,
         },
         .scl_speed_hz = BSP_I2C_GetClockSpeed(),
     };
 
+    /* 获取共享 I2C 总线句柄 */
     i2c_master_bus_handle_t bus_handle = NULL;
     esp_err_t ret = i2cdev_get_shared_handle(BSP_I2C_GetPort(), (void **)&bus_handle);
     if (ret != ESP_OK) {
@@ -171,18 +197,21 @@ esp_err_t BSP_OLED_Init(void)
         return ret;
     }
 
+    /* 2. 创建 I2C 面板 IO */
     ret = esp_lcd_new_panel_io_i2c(bus_handle, &io_config, &s_io);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "panel io init failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
+
+    /* 3. 创建 SSD1306 面板驱动 */
     esp_lcd_panel_ssd1306_config_t vendor_config = {
         .height = BSP_OLED_HEIGHT,
     };
     esp_lcd_panel_dev_config_t panel_config = {
-        .bits_per_pixel = 1,
-        .reset_gpio_num = -1,
+        .bits_per_pixel = 1,          /* 单色屏 */
+        .reset_gpio_num = -1,         /* 无硬件复位引脚 */
         .vendor_config = &vendor_config,
     };
 
@@ -194,6 +223,7 @@ esp_err_t BSP_OLED_Init(void)
         return ret;
     }
 
+    /* 4. 复位 → 初始化 → 开启显示 */
     ret = esp_lcd_panel_reset(s_panel);
     if (ret == ESP_OK) {
         ret = esp_lcd_panel_init(s_panel);
@@ -214,7 +244,7 @@ esp_err_t BSP_OLED_Init(void)
     s_initialized = true;
     ESP_LOGI(TAG, "SSD1306 ready on I2C addr=0x%02X", BSP_OLED_I2C_ADDRESS);
 
-    return BSP_OLED_Clear();
+    return BSP_OLED_Clear();  /* 初始清屏 */
 }
 
 bool BSP_OLED_IsReady(void)

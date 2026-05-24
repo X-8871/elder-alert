@@ -260,10 +260,6 @@ void RiskEngine_Evaluate(const sensor_hub_data_t *data,
                                             !data->ld2410b_moving_target &&
                                             context->inactive_ms >= config->no_motion_remind_ms;
         result->no_motion_timeout = result->static_presence_no_motion;
-    } else if (!context->rest_context_active) {
-        result->mmwave_fault_fallback = true;
-        result->no_motion_timeout = data->am312_ok &&
-                                    context->inactive_ms >= config->no_motion_remind_ms;
     }
 
     if (data->aht20_ok) {
@@ -380,8 +376,6 @@ void RiskEngine_BuildReasonString(const risk_result_t *result, char *buffer, siz
     }
     if (result->static_presence_no_motion) {
         append_reason(buffer, buffer_size, "检测到有人存在但长时间没有明显活动，已提醒老人确认是否安全", &first);
-    } else if (result->no_motion_timeout) {
-        append_reason(buffer, buffer_size, "毫米波人体存在模块数据无效，系统已回退到活动传感器判断：长时间未检测到明显活动，已提醒老人确认是否安全", &first);
     }
     if (result->high_temperature) {
         append_reason(buffer, buffer_size, "室内温度较高，已提醒通风降温和补水", &first);

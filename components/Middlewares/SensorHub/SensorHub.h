@@ -1,6 +1,6 @@
 /**
  * @file SensorHub.h
- * @brief 传感器中枢，统一管理 AHT20 / BMP280 / BH1750 / MQ2 / AM312 / LD2410B 的初始化和数据采集。
+ * @brief 传感器中枢，统一管理 AHT20 / BH1750 / MQ2 / LD2410B 的初始化和数据采集。
  *
  * SensorHub 屏蔽底层各传感器驱动差异，提供统一的数据读取接口和健康状态查询。
  * 单个传感器初始化失败不会阻塞其他传感器，上层可通过 sensor_hub_status_t 判断可用性。
@@ -16,13 +16,12 @@
 #include "driver/uart.h"
 #include "esp_err.h"
 
-/* I2C 总线配置，AHT20/BMP280/BH1750/OLED 共享此总线。 */
+/* I2C 总线配置，AHT20/BH1750/OLED 共享此总线。 */
 #define SENSOR_HUB_I2C_PORT       I2C_NUM_0
 #define SENSOR_HUB_I2C_SDA_GPIO   GPIO_NUM_4
 #define SENSOR_HUB_I2C_SCL_GPIO   GPIO_NUM_5
 #define SENSOR_HUB_I2C_FREQ_HZ    100000  /* 100 kHz 标准模式 */
 #define SENSOR_HUB_MQ2_ADC_GPIO   GPIO_NUM_1
-#define SENSOR_HUB_AM312_GPIO     GPIO_NUM_6
 #define SENSOR_HUB_LD2410B_UART_NUM UART_NUM_1
 #define SENSOR_HUB_LD2410B_TX_GPIO  GPIO_NUM_18
 #define SENSOR_HUB_LD2410B_RX_GPIO  GPIO_NUM_16
@@ -35,10 +34,8 @@
 /** 各传感器初始化成功/失败状态，供上层判断当前有哪些设备可用。 */
 typedef struct {
     bool aht20;
-    bool bmp280;
     bool bh1750;
     bool mq2;
-    bool am312;
     bool ld2410b;
 } sensor_hub_status_t;
 
@@ -46,13 +43,10 @@ typedef struct {
 typedef struct {
     float aht_temperature;   /* AHT20 温度 (°C) */
     float humidity;          /* AHT20 相对湿度 (%) */
-    float bmp_temperature;   /* BMP280 温度 (°C) */
-    float pressure;          /* BMP280 气压 (Pa) */
     uint16_t lux;            /* BH1750 光照度 (lux) */
     int mq2_raw;             /* MQ2 ADC 原始值 */
     int mq2_voltage_mv;      /* MQ2 校准后电压 (mV)，校准不可用时为 -1 */
-    int am312_raw_level;     /* AM312 GPIO 原始电平 */
-    bool motion_detected;    /* AM312 人体活动检测结果（已按极性解释） */
+    bool motion_detected;    /* 通用活动标志，当前由 LD2410B 运动目标给出 */
     bool ld2410b_presence;   /* LD2410B 是否检测到人体存在 */
     bool ld2410b_moving_target;
     bool ld2410b_stationary_target;
@@ -62,10 +56,8 @@ typedef struct {
     uint8_t ld2410b_stationary_energy;
     uint16_t ld2410b_detection_distance_cm;
     bool aht20_ok;           /* 本轮 AHT20 读取是否成功 */
-    bool bmp280_ok;
     bool bh1750_ok;
     bool mq2_ok;
-    bool am312_ok;
     bool ld2410b_ok;
 } sensor_hub_data_t;
 

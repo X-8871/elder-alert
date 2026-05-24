@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>居家安全看护面板</title>
-    <link rel="stylesheet" href="styles.css?v=20260518-1143" />
+    <link rel="stylesheet" href="styles.css?v=20260518-1645" />
   </head>
   <body>
     <div class="app-frame">
@@ -33,7 +33,7 @@
         <div>
           <p class="eyebrow">ESP32-S3 独居老人风险预警终端</p>
           <h1>居家安全看护面板</h1>
-          <p class="topbar-note">当前状态、毫米波人体存在、设备健康与异常事件集中展示</p>
+          <p class="topbar-note">当前状态、环境指标、毫米波人体存在、设备健康与异常事件集中展示</p>
         </div>
         <div class="topbar-actions">
           <div class="refresh-chip" aria-live="polite">
@@ -142,11 +142,6 @@
                 <span>场景提醒</span>
                 <strong id="metric-light-scene">-</strong>
                 <small id="metric-light-scene-note">根据当前光照判断白天活动或夜晚睡眠场景</small>
-              </article>
-              <article class="metric-card">
-                <span>人体活动</span>
-                <strong id="metric-motion">-</strong>
-                <small>人体活动</small>
               </article>
               <article class="metric-card metric-card-compact">
                 <span>毫米波存在</span>
@@ -340,6 +335,17 @@
               <audio id="speech-ai-audio" controls preload="none" hidden></audio>
             </div>
           </div>
+          <div class="voice-prompts-card" aria-label="状态播报配置">
+            <div class="panel-head">
+              <div>
+                <span class="section-label">状态播报</span>
+                <h3>云端状态播报配置</h3>
+              </div>
+              <button id="voice-prompts-save-button" type="button">保存播报配置</button>
+            </div>
+            <p id="voice-prompts-status" class="panel-note">加载中...</p>
+            <div id="voice-prompts-list" class="voice-prompts-list"></div>
+          </div>
         </article>
       </section>
       </main>
@@ -356,6 +362,6 @@
       </footer>
     </div>
 
-    <script src="app.js?v=20260518-1143"></script>
+    <script src="app.js?v=20260518-1645"></script>
   </body>
 </html>

@@ -51,32 +51,6 @@ dependencies:
     - esp32s2
     - esp32s3
     version: 1.1.7
-  esp-idf-lib/bmp280:
-    component_hash: 82b01a37c200ed66a6c451026e2afdbe8046c6f702d41085e5a1d83aec3a90d8
-    dependencies:
-    - name: esp-idf-lib/esp_idf_lib_helpers
-      registry_url: https://components.espressif.com
-      require: private
-      version: '*'
-    - name: esp-idf-lib/i2cdev
-      registry_url: https://components.espressif.com
-      require: private
-      version: '*'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    targets:
-    - esp32
-    - esp32c2
-    - esp32c3
-    - esp32c5
-    - esp32c6
-    - esp32c61
-    - esp32h2
-    - esp32p4
-    - esp32s2
-    - esp32s3
-    version: 1.0.7
   esp-idf-lib/esp_idf_lib_helpers:
     component_hash: 689853bb8993434f9556af0f2816e808bf77b5d22100144b21f3519993daf237
     dependencies: []
@@ -299,11 +273,10 @@ dependencies:
 direct_dependencies:
 - esp-idf-lib/aht
 - esp-idf-lib/bh1750
-- esp-idf-lib/bmp280
 - espressif/esp_rainmaker
 - espressif/led_strip
 - idf
 - lvgl/lvgl
-manifest_hash: 79ff712da088bb48160be301f6de7fc16edbb5a7c4dec337189fc59f9b9c27ef
+manifest_hash: 28742860e7218adcbe3137d27f103a17d7d21ac680ca93822d2b7aa082fc8a57
 target: esp32s3
 version: 2.0.0

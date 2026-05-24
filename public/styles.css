@@ -1109,6 +1109,95 @@ select {
   margin-top: 12px;
 }
 
+.voice-prompts-card {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  background: var(--paper-soft);
+}
+
+.voice-prompts-list {
+  display: grid;
+  gap: 12px;
+}
+
+.voice-prompt-item {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  background: #fff;
+}
+
+.voice-prompt-head,
+.voice-prompt-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.voice-prompt-head strong {
+  display: block;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.voice-prompt-head p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.voice-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.voice-prompt-toggle,
+.voice-prompt-cooldown {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.voice-prompt-cooldown input {
+  width: 110px;
+}
+
+.voice-prompt-text,
+.voice-prompt-cooldown input {
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--text);
+  background: #fff;
+  font: inherit;
+}
+
+.voice-prompt-text {
+  width: 100%;
+  min-height: 84px;
+  margin-top: 12px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.voice-prompt-foot {
+  margin-top: 12px;
+}
+
+.voice-prompt-foot small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .status-pill {
   width: max-content;
   margin-top: 8px;

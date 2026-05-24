@@ -35,7 +35,6 @@ const refs = {
   metricMq2Threshold: document.getElementById("metric-mq2-threshold"),
   metricLightScene: document.getElementById("metric-light-scene"),
   metricLightSceneNote: document.getElementById("metric-light-scene-note"),
-  metricMotion: document.getElementById("metric-motion"),
   metricMmwave: document.getElementById("metric-mmwave"),
   metricMmwaveDistance: document.getElementById("metric-mmwave-distance"),
   miniChartNote: document.getElementById("mini-chart-note"),
@@ -94,6 +93,9 @@ const refs = {
   voiceModeTitle: document.getElementById("voice-mode-title"),
   voiceModeButtons: Array.from(document.querySelectorAll("[data-voice-mode]")),
   voiceModeNote: document.getElementById("voice-mode-note"),
+  voicePromptsStatus: document.getElementById("voice-prompts-status"),
+  voicePromptsList: document.getElementById("voice-prompts-list"),
+  voicePromptsSaveButton: document.getElementById("voice-prompts-save-button"),
 };
 
 const AUTO_REFRESH_MS = 3000;
@@ -158,6 +160,7 @@ let currentAlertsPage = 1;
 let latestAlerts = [];
 let currentAlertStateFilter = "ALL";
 let currentView = "";
+let voicePromptItems = [];
 const VIEW_BY_HASH = {
   "#hero-card": "status",
   "#snapshot-panel": "detect",
@@ -351,7 +354,7 @@ function fusionText(item) {
   if (item.ld2410b_ok) {
     return "毫米波有效，优先使用人体存在/静止判断";
   }
-  return "毫米波不可用，回退 AM312 活动判断";
+  return "毫米波不可用，当前无法提供人体存在融合判断";
 }
 
 function healthValue(item, key) {
@@ -500,6 +503,96 @@ function renderVoiceMode(mode, offlineReply = "", selectedMode = mode, deviceOff
   for (const button of refs.voiceModeButtons) {
     button.classList.toggle("active", button.dataset.voiceMode === selectedMode);
   }
+}
+
+function createVoicePromptRow(item) {
+  const article = document.createElement("article");
+  article.className = "voice-prompt-item";
+  article.dataset.eventKey = item.event_key;
+
+  const header = document.createElement("div");
+  header.className = "voice-prompt-head";
+
+  const titleBox = document.createElement("div");
+  const key = document.createElement("strong");
+  key.textContent = item.event_key;
+  const label = document.createElement("p");
+  label.textContent = item.label;
+  titleBox.append(key, label);
+
+  const actions = document.createElement("div");
+  actions.className = "voice-prompt-actions";
+
+  const toggleLabel = document.createElement("label");
+  toggleLabel.className = "voice-prompt-toggle";
+  const toggle = document.createElement("input");
+  toggle.type = "checkbox";
+  toggle.checked = Boolean(item.enabled);
+  toggle.dataset.field = "enabled";
+  const toggleText = document.createElement("span");
+  toggleText.textContent = "启用";
+  toggleLabel.append(toggle, toggleText);
+
+  const previewButton = document.createElement("button");
+  previewButton.type = "button";
+  previewButton.textContent = "试听";
+  previewButton.dataset.action = "preview";
+  previewButton.dataset.eventKey = item.event_key;
+
+  actions.append(toggleLabel, previewButton);
+  header.append(titleBox, actions);
+
+  const textArea = document.createElement("textarea");
+  textArea.className = "voice-prompt-text";
+  textArea.rows = 2;
+  textArea.value = item.tts_text || "";
+  textArea.dataset.field = "tts_text";
+
+  const footer = document.createElement("div");
+  footer.className = "voice-prompt-foot";
+
+  const cooldownLabel = document.createElement("label");
+  cooldownLabel.className = "voice-prompt-cooldown";
+  const cooldownTitle = document.createElement("span");
+  cooldownTitle.textContent = "冷却毫秒";
+  const cooldownInput = document.createElement("input");
+  cooldownInput.type = "number";
+  cooldownInput.min = "0";
+  cooldownInput.step = "1000";
+  cooldownInput.value = String(item.cooldown_ms ?? 0);
+  cooldownInput.dataset.field = "cooldown_ms";
+  cooldownLabel.append(cooldownTitle, cooldownInput);
+
+  const updated = document.createElement("small");
+  updated.textContent = `最近更新：${formatTimestamp(item.updated_at)}`;
+
+  footer.append(cooldownLabel, updated);
+  article.append(header, textArea, footer);
+  return article;
+}
+
+function renderVoicePrompts(items) {
+  voicePromptItems = Array.isArray(items) ? items : [];
+  refs.voicePromptsList.innerHTML = "";
+
+  if (!voicePromptItems.length) {
+    refs.voicePromptsStatus.textContent = "暂无状态播报配置。";
+    return;
+  }
+
+  refs.voicePromptsStatus.textContent = `共 ${voicePromptItems.length} 条状态播报配置。`;
+  for (const item of voicePromptItems) {
+    refs.voicePromptsList.appendChild(createVoicePromptRow(item));
+  }
+}
+
+function collectVoicePromptUpdates() {
+  return Array.from(refs.voicePromptsList.querySelectorAll(".voice-prompt-item")).map((node) => ({
+    event_key: node.dataset.eventKey,
+    enabled: node.querySelector('[data-field="enabled"]').checked,
+    tts_text: node.querySelector('[data-field="tts_text"]').value.trim(),
+    cooldown_ms: Number(node.querySelector('[data-field="cooldown_ms"]').value || 0),
+  }));
 }
 
 function friendlyReason(reason) {
@@ -744,7 +837,6 @@ function renderLatestSnapshot(item) {
   setSensorBar(refs.metricHumidityBar, item.humidity, RISK_THRESHOLDS.humidityDisplayPercent);
   setSensorBar(refs.metricLuxBar, item.lux, profile.enterRestLux);
   setSensorBar(refs.metricMq2Bar, item.mq2_raw, profile.mq2RemindRaw);
-  refs.metricMotion.textContent = formatBoolean(item.motion_detected);
   refs.metricMmwave.textContent = formatMmwaveState(item);
   refs.metricMmwaveDistance.textContent = formatMmwaveDistance(item);
   refs.metricTick.textContent = `设备运行 ${formatValue(item.timestamp_ms)} 毫秒`;
@@ -843,10 +935,8 @@ function renderMmwavePanel(item) {
 function renderHealthPanel(item) {
   const sensors = [
     ["AHT20 温湿度", "sensor_aht20_ok"],
-    ["BMP280 气压", "sensor_bmp280_ok"],
     ["BH1750 光照", "sensor_bh1750_ok"],
     ["MQ2 烟雾气体", "sensor_mq2_ok"],
-    ["AM312 人体活动", "sensor_am312_ok"],
     ["LD2410B 毫米波", "ld2410b_ok"],
   ];
   refs.healthGrid.innerHTML = "";
@@ -971,7 +1061,6 @@ function renderAlerts(items) {
       createTextCell("湿度", formatNumber(item.humidity, "%")),
       createTextCell("光照", formatNumber(item.lux, "lx")),
       createTextCell("烟雾气体", item.mq2_raw),
-      createTextCell("人体活动", formatBoolean(item.motion_detected)),
       createTextCell("毫米波", formatMmwaveState(item)),
       createTextCell("距离/能量", formatMmwaveDistance(item)),
     );
@@ -997,7 +1086,7 @@ function renderServiceStatus(data) {
   refs.serviceLastReceived.textContent = formatTimestamp(data.lastReceivedAt);
   refs.serviceAge.textContent = formatAge(data.lastReceivedAt);
   refs.endpointBox.textContent =
-    `设备上报 ${data.alertPath} / 最新状态 ${data.latestPath} / 服务状态 /api/status / 异常事件 /api/alerts / 语音上传 ${data.speechTranscribePath} / 语音回复 ${data.speechReplyAudioPath || "/api/speech/reply-audio"}`;
+    `设备上报 ${data.alertPath} / 最新状态 ${data.latestPath} / 服务状态 /api/status / 异常事件 /api/alerts / 语音上传 ${data.speechTranscribePath} / 语音回复 ${data.speechReplyAudioPath || "/api/speech/reply-audio"} / 状态播报 ${data.voicePromptsPath || "/api/voice-prompts"}`;
   const speechState = data.aiReplyConfigured
     ? `语音识别 + 智能回复 · ${data.aiReplyModel || "模型"}`
     : data.speechAsrConfigured
@@ -1113,6 +1202,20 @@ async function loadVoiceMode() {
   renderVoiceMode(data.mode, data.offlineReply, data.selectedMode || data.mode, data.deviceOffline);
 }
 
+async function loadVoicePrompts() {
+  const response = await fetch("/api/voice-prompts", { cache: "no-store" });
+  if (response.status === 401) {
+    window.location.href = "/login.html";
+    return;
+  }
+  if (!response.ok) {
+    throw new Error("状态播报配置加载失败");
+  }
+
+  const data = await response.json();
+  renderVoicePrompts(data.items || []);
+}
+
 async function setVoiceMode(mode) {
   for (const button of refs.voiceModeButtons) {
     button.disabled = true;
@@ -1136,6 +1239,50 @@ async function setVoiceMode(mode) {
     for (const button of refs.voiceModeButtons) {
       button.disabled = false;
     }
+  }
+}
+
+async function saveVoicePrompts() {
+  refs.voicePromptsSaveButton.disabled = true;
+  refs.voicePromptsStatus.textContent = "正在保存状态播报配置...";
+
+  try {
+    const items = collectVoicePromptUpdates();
+    const response = await fetch("/api/voice-prompts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data?.ok) {
+      throw new Error(data?.message || "状态播报配置保存失败");
+    }
+
+    renderVoicePrompts(data.items || []);
+    refs.voicePromptsStatus.textContent = "状态播报配置已保存。";
+  } catch (error) {
+    refs.voicePromptsStatus.textContent = error.message;
+  } finally {
+    refs.voicePromptsSaveButton.disabled = false;
+  }
+}
+
+async function previewVoicePrompt(eventKey, button) {
+  if (!eventKey) {
+    return;
+  }
+
+  button.disabled = true;
+  refs.voicePromptsStatus.textContent = `正在试听 ${eventKey}...`;
+
+  try {
+    const audio = new Audio(`/api/voice-prompts/audio?event_key=${encodeURIComponent(eventKey)}&t=${Date.now()}`);
+    await audio.play();
+    refs.voicePromptsStatus.textContent = `正在试听 ${eventKey}。`;
+  } catch (error) {
+    refs.voicePromptsStatus.textContent = `试听失败：${error.message}`;
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -1177,12 +1324,13 @@ async function uploadSpeechFile() {
 async function refreshAll() {
   refs.refreshButton.disabled = true;
 
-  const [serviceResult, snapshotResult, alertsResult, speechResult, voiceModeResult] = await Promise.allSettled([
+  const [serviceResult, snapshotResult, alertsResult, speechResult, voiceModeResult, voicePromptsResult] = await Promise.allSettled([
     loadServiceStatus(),
     loadLatestSnapshot(),
     loadAlerts(),
     loadLatestSpeech(),
     loadVoiceMode(),
+    loadVoicePrompts(),
   ]);
 
   if (serviceResult.status === "rejected") {
@@ -1209,6 +1357,10 @@ async function refreshAll() {
     refs.voiceModeNote.textContent = `语音模式刷新失败：${voiceModeResult.reason.message}`;
   }
 
+  if (voicePromptsResult.status === "rejected") {
+    refs.voicePromptsStatus.textContent = `状态播报配置刷新失败：${voicePromptsResult.reason.message}`;
+  }
+
   refs.refreshButton.disabled = false;
 }
 
@@ -1224,6 +1376,14 @@ async function logout() {
 refs.refreshButton.addEventListener("click", refreshAll);
 refs.logoutButton.addEventListener("click", logout);
 refs.speechUploadButton.addEventListener("click", uploadSpeechFile);
+refs.voicePromptsSaveButton.addEventListener("click", saveVoicePrompts);
+refs.voicePromptsList.addEventListener("click", (event) => {
+  const button = event.target.closest('[data-action="preview"]');
+  if (!button) {
+    return;
+  }
+  previewVoicePrompt(button.dataset.eventKey, button);
+});
 for (const button of refs.voiceModeButtons) {
   button.addEventListener("click", () => setVoiceMode(button.dataset.voiceMode));
 }

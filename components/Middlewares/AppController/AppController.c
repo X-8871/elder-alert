@@ -62,6 +62,7 @@ static bool s_last_distance_valid = false;
 static uint16_t s_last_distance_cm = 0;
 static distance_event_t s_distance_events[DISTANCE_EVENT_MAX] = {0};
 static uint8_t s_distance_event_index = 0;
+static const char *s_pending_voice_prompt_key = NULL;
 
 static uint32_t now_ms(void)
 {
@@ -189,6 +190,16 @@ static esp_err_t apply_state(app_state_t next_state)
     return ret;
 }
 
+static esp_err_t apply_state_with_voice_prompt(app_state_t next_state, const char *voice_prompt_key)
+{
+    app_state_t previous_state = s_current_state;
+    esp_err_t ret = apply_state(next_state);
+    if (ret == ESP_OK && previous_state != next_state && voice_prompt_key != NULL) {
+        s_pending_voice_prompt_key = voice_prompt_key;
+    }
+    return ret;
+}
+
 static void set_remind_cause(remind_cause_t cause)
 {
     if (s_remind_cause == cause) {
@@ -306,8 +317,7 @@ static bool no_motion_recovery_ready(uint32_t current_ms, const sensor_hub_data_
         return false;
     }
 
-    bool activity_detected = (sensor_data->am312_ok && sensor_data->motion_detected) ||
-                             (sensor_data->ld2410b_ok && sensor_data->ld2410b_moving_target);
+    bool activity_detected = sensor_data->ld2410b_ok && sensor_data->ld2410b_moving_target;
     return activity_detected && distance_changed_often(current_ms);
 }
 
@@ -407,6 +417,7 @@ esp_err_t AppController_Init(void)
         s_distance_events[i] = (distance_event_t){0};
     }
     s_distance_event_index = 0;
+    s_pending_voice_prompt_key = NULL;
     s_initialized = true;
 
     ESP_LOGI(TAG, "state_init: %s", AppController_StateToString(s_current_state));
@@ -424,11 +435,10 @@ esp_err_t AppController_UpdateContext(const sensor_hub_data_t *sensor_data)
 
     uint32_t current_ms = now_ms();
     bool distance_event = update_distance_tracking(sensor_data, current_ms);
-    bool obvious_activity = (sensor_data->am312_ok && sensor_data->motion_detected) ||
-                            (sensor_data->ld2410b_ok && sensor_data->ld2410b_moving_target) ||
+    bool obvious_activity = (sensor_data->ld2410b_ok && sensor_data->ld2410b_moving_target) ||
                             distance_event;
     bool no_person_in_mmwave_area = sensor_data->ld2410b_ok && !sensor_data->ld2410b_presence;
-    bool activity_unknown = !sensor_data->am312_ok && !sensor_data->ld2410b_ok;
+    bool activity_unknown = !sensor_data->ld2410b_ok;
 
     update_rest_context(sensor_data, current_ms, obvious_activity);
 
@@ -492,7 +502,7 @@ esp_err_t AppController_Process(const sensor_hub_data_t *sensor_data, const risk
         !risk_result->mq2_clear_stable) {
         s_alarm_cause = ALARM_CAUSE_MQ2_LIGHT_TIMEOUT;
         s_remind_timeout_latched = true;
-        return apply_state(APP_STATE_ALARM);
+        return apply_state_with_voice_prompt(APP_STATE_ALARM, "mq2_mild_timeout_alarm");
     }
     if (risk_result->mq2_clear_stable) {
         s_mq2_alarm_cooldown_until_ms = 0;
@@ -500,28 +510,28 @@ esp_err_t AppController_Process(const sensor_hub_data_t *sensor_data, const risk
 
     if (risk_result->mq2_temp_rise_alarm) {
         s_alarm_cause = ALARM_CAUSE_MQ2_TEMP_RISE;
-        return apply_state(APP_STATE_ALARM);
+        return apply_state_with_voice_prompt(APP_STATE_ALARM, "mq2_temp_alarm");
     }
 
     if (risk_result->mq2_high_alarm) {
         s_alarm_cause = ALARM_CAUSE_MQ2_HARD;
-        return apply_state(APP_STATE_ALARM);
+        return apply_state_with_voice_prompt(APP_STATE_ALARM, "mq2_danger_alarm");
     }
 
     if (s_current_state == APP_STATE_REMIND) {
         if (s_remind_cause == REMIND_CAUSE_NO_MOTION) {
             if (no_motion_recovery_ready(current_ms, sensor_data)) {
                 s_last_motion_tick = xTaskGetTickCount();
-                return apply_state(APP_STATE_NORMAL);
+                return apply_state_with_voice_prompt(APP_STATE_NORMAL, "risk_cleared_normal");
             }
             return apply_state(APP_STATE_REMIND);
         }
         if (s_remind_cause == REMIND_CAUSE_HIGH_TEMP && !risk_result->high_temperature) {
-            return apply_state(APP_STATE_NORMAL);
+            return apply_state_with_voice_prompt(APP_STATE_NORMAL, "risk_cleared_normal");
         }
         if (s_remind_cause == REMIND_CAUSE_MQ2_LIGHT) {
             if (risk_result->mq2_clear_stable) {
-                return apply_state(APP_STATE_NORMAL);
+                return apply_state_with_voice_prompt(APP_STATE_NORMAL, "risk_cleared_normal");
             }
             return apply_state(APP_STATE_REMIND);
         }
@@ -529,17 +539,17 @@ esp_err_t AppController_Process(const sensor_hub_data_t *sensor_data, const risk
 
     if (risk_result->mq2_light_warning) {
         set_remind_cause(REMIND_CAUSE_MQ2_LIGHT);
-        return apply_state(APP_STATE_REMIND);
+        return apply_state_with_voice_prompt(APP_STATE_REMIND, "mq2_mild_remind");
     }
 
     if (risk_result->no_motion_timeout) {
         set_remind_cause(REMIND_CAUSE_NO_MOTION);
-        return apply_state(APP_STATE_REMIND);
+        return apply_state_with_voice_prompt(APP_STATE_REMIND, "no_motion_remind");
     }
 
     if (risk_result->high_temperature && !high_temp_cooldown_active(current_ms)) {
         set_remind_cause(REMIND_CAUSE_HIGH_TEMP);
-        return apply_state(APP_STATE_REMIND);
+        return apply_state_with_voice_prompt(APP_STATE_REMIND, "high_temp_remind");
     }
 
     return apply_state(APP_STATE_NORMAL);
@@ -581,12 +591,12 @@ esp_err_t AppController_Service(void)
             if (s_remind_cause == REMIND_CAUSE_HIGH_TEMP) {
                 s_high_temp_cooldown_until_ms = now_ms() + get_high_temp_cooldown_ms();
                 s_last_motion_tick = xTaskGetTickCount();
-                ret = apply_state(APP_STATE_NORMAL);
+                ret = apply_state_with_voice_prompt(APP_STATE_NORMAL, "user_confirm_normal");
                 ESP_LOGI(TAG, "high_temp_remind_cleared_by_user cooldown_ms=%" PRIu32,
                          get_high_temp_cooldown_ms());
             } else if (s_remind_cause == REMIND_CAUSE_NO_MOTION) {
                 s_last_motion_tick = xTaskGetTickCount();
-                ret = apply_state(APP_STATE_NORMAL);
+                ret = apply_state_with_voice_prompt(APP_STATE_NORMAL, "user_confirm_normal");
                 ESP_LOGI(TAG, "no_motion_remind_cleared_by_user");
             } else if (s_remind_cause == REMIND_CAUSE_MQ2_LIGHT) {
                 ret = AlertController_Confirm();
@@ -599,12 +609,12 @@ esp_err_t AppController_Service(void)
             if (s_alarm_cause == ALARM_CAUSE_NO_MOTION_TIMEOUT) {
                 s_remind_timeout_latched = false;
                 s_last_motion_tick = xTaskGetTickCount();
-                ret = apply_state(APP_STATE_NORMAL);
+                ret = apply_state_with_voice_prompt(APP_STATE_NORMAL, "user_confirm_normal");
                 ESP_LOGI(TAG, "no_motion_alarm_cleared_by_user");
             } else if (s_alarm_cause == ALARM_CAUSE_MQ2_LIGHT_TIMEOUT) {
                 s_remind_timeout_latched = false;
                 s_mq2_alarm_cooldown_until_ms = now_ms() + get_mq2_alarm_cooldown_ms();
-                ret = apply_state(APP_STATE_NORMAL);
+                ret = apply_state_with_voice_prompt(APP_STATE_NORMAL, "user_confirm_normal");
                 ESP_LOGI(TAG, "mq2_light_alarm_cleared_by_user cooldown_ms=%" PRIu32,
                          get_mq2_alarm_cooldown_ms());
             } else {
@@ -617,7 +627,7 @@ esp_err_t AppController_Service(void)
         } else if (s_current_state == APP_STATE_SOS) {
             s_sos_latched = false;
             s_last_motion_tick = xTaskGetTickCount();
-            ret = apply_state(APP_STATE_NORMAL);
+            ret = apply_state_with_voice_prompt(APP_STATE_NORMAL, "user_confirm_normal");
             if (ret != ESP_OK) {
                 return ret;
             }
@@ -636,7 +646,11 @@ esp_err_t AppController_Service(void)
             s_alarm_cause = s_remind_cause == REMIND_CAUSE_MQ2_LIGHT
                                 ? ALARM_CAUSE_MQ2_LIGHT_TIMEOUT
                                 : ALARM_CAUSE_NO_MOTION_TIMEOUT;
-            ret = apply_state(APP_STATE_ALARM);
+            ret = apply_state_with_voice_prompt(
+                APP_STATE_ALARM,
+                s_remind_cause == REMIND_CAUSE_MQ2_LIGHT
+                    ? "mq2_mild_timeout_alarm"
+                    : "no_motion_timeout_alarm");
             if (ret != ESP_OK) {
                 return ret;
             }
@@ -684,4 +698,11 @@ bool AppController_IsRestContextActive(void)
 uint32_t AppController_GetSosTriggerCount(void)
 {
     return s_sos_trigger_count;
+}
+
+const char *AppController_TakePendingVoicePromptKey(void)
+{
+    const char *key = s_pending_voice_prompt_key;
+    s_pending_voice_prompt_key = NULL;
+    return key;
 }

@@ -313,15 +313,15 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
         sizeof(request_body),
         "{\"device_id\":\"%s\",\"state\":\"%s\",\"risk_level\":\"%s\","
         "\"reason\":\"%s\",\"temperature\":%.1f,\"humidity\":%.1f,"
-        "\"lux\":%u,\"mq2_raw\":%d,\"motion_detected\":%s,"
-        "\"sensor_aht20_ok\":%s,\"sensor_bmp280_ok\":%s,"
-        "\"sensor_bh1750_ok\":%s,\"sensor_mq2_ok\":%s,\"sensor_am312_ok\":%s,"
+        "\"lux\":%u,\"mq2_raw\":%d,"
+        "\"sensor_aht20_ok\":%s,"
+        "\"sensor_bh1750_ok\":%s,\"sensor_mq2_ok\":%s,"
         "\"ld2410b_ok\":%s,\"ld2410b_presence\":%s,"
         "\"ld2410b_moving_target\":%s,\"ld2410b_stationary_target\":%s,"
         "\"ld2410b_moving_distance_cm\":%u,\"ld2410b_stationary_distance_cm\":%u,"
         "\"ld2410b_detection_distance_cm\":%u,"
         "\"ld2410b_moving_energy\":%u,\"ld2410b_stationary_energy\":%u,"
-        "\"mmwave_fusion_active\":%s,\"am312_fallback_active\":%s,"
+        "\"mmwave_fusion_active\":%s,"
         "\"run_mode\":\"%s\",\"no_motion_remind_ms\":%u,"
         "\"remind_confirm_timeout_ms\":%u,"
         "\"remind_confirm_timeout_demo_ms\":%u,"
@@ -335,12 +335,9 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
         sensor_data->humidity,
         (unsigned int)sensor_data->lux,
         sensor_data->mq2_raw,
-        sensor_data->motion_detected ? "true" : "false",
         sensor_data->aht20_ok ? "true" : "false",
-        sensor_data->bmp280_ok ? "true" : "false",
         sensor_data->bh1750_ok ? "true" : "false",
         sensor_data->mq2_ok ? "true" : "false",
-        sensor_data->am312_ok ? "true" : "false",
         sensor_data->ld2410b_ok ? "true" : "false",
         sensor_data->ld2410b_presence ? "true" : "false",
         sensor_data->ld2410b_moving_target ? "true" : "false",
@@ -351,7 +348,6 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
         (unsigned int)sensor_data->ld2410b_moving_energy,
         (unsigned int)sensor_data->ld2410b_stationary_energy,
         sensor_data->ld2410b_ok ? "true" : "false",
-        risk_result->mmwave_fault_fallback ? "true" : "false",
         run_mode_string(),
         (unsigned int)no_motion_remind_ms(),
         (unsigned int)remind_confirm_timeout_ms(),

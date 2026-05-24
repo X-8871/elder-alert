@@ -1,5 +1,19 @@
 # ESP-IDF 分区表
-# 名称, 类型, 子类型, 偏移, 大小, 标志
+#
+# 【学弟必读】
+# ESP32 的 flash 被划分成多个"分区"，每个分区有独立的用途。
+# 就像电脑硬盘分区：C盘装系统、D盘存文件。
+#
+# 格式：名称, 类型, 子类型, 偏移, 大小, 标志
+#
+# 分区一览：
+#   nvs       — 非易失性存储（保存 Wi-Fi 凭据等配置）
+#   phy_init  — Wi-Fi 物理层校准数据
+#   factory   — 主固件区（app_main 的代码就放这）当前 2MB
+#   vfs       — 虚拟文件系统（FAT 格式，存日志/音频等）
+#   storage   — SPIFFS 文件系统（约 4MB）
+#   fctry     — 备用 NVS 区
+
 nvs,data,nvs,0x9000,0x6000,
 phy_init,data,phy,0xf000,0x1000,
 factory,app,factory,0x10000,0x200000,

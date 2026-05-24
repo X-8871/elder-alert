@@ -1,9 +1,18 @@
 /**
  * @file Alert.c
- * @brief LED + 蜂鸣器声光提示驱动实现，基于 FreeRTOS tick 的节拍式闪烁/鸣叫控制。
+ * @brief LED + 蜂鸣器声光提示驱动实现——基于 FreeRTOS tick 的非阻塞节拍控制。
  *
- * 不同模式对应不同的闪烁频率：
- *   NORMAL 1000ms / REMIND 500ms / ALARM 250ms / SOS 120ms
+ * 【学弟必读：非阻塞闪烁的实现原理】
+ * 关键变量：s_last_toggle_tick（上次翻转的时刻）
+ *
+ * 每次 Update() 被调用时：
+ *   当前时间 - 上次翻转时间 >= 闪烁间隔？
+ *     ├─ 是 → 翻转 LED/蜂鸣器状态，更新上次翻转时间
+ *     └─ 否 → 什么都不做，直接返回
+ *
+ * 这样就实现了"不阻塞主循环的闪烁效果"。
+ * 不同的模式（NORMAL/REMIND/ALARM/SOS）只有间隔不同，
+ * 翻转逻辑完全一样。
  */
 
 #include "BSP_Alert.h"
@@ -12,28 +21,30 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 
-#define ALERT_NORMAL_BLINK_MS 1000
-#define ALERT_REMIND_BLINK_MS 500
-#define ALERT_ALARM_BLINK_MS  250
-#define ALERT_SOS_BLINK_MS    120
+/* 不同模式的闪烁间隔 (ms) —— 越小闪烁越快，紧迫感越强 */
+#define ALERT_NORMAL_BLINK_MS 1000   /* 1 秒一次 */
+#define ALERT_REMIND_BLINK_MS 500    /* 0.5 秒一次 */
+#define ALERT_ALARM_BLINK_MS  250    /* 0.25 秒一次 */
+#define ALERT_SOS_BLINK_MS    120    /* 0.12 秒一次（非常急促） */
 
 static const char *TAG = "BSP_Alert";
 static gpio_num_t s_led_gpio = GPIO_NUM_NC;
 static gpio_num_t s_buzzer_gpio = GPIO_NUM_NC;
 static bsp_alert_mode_t s_mode = BSP_ALERT_MODE_OFF;
-static TickType_t s_last_toggle_tick = 0;
+static TickType_t s_last_toggle_tick = 0;  /* 上次翻转的时刻（FreeRTOS tick） */
 static bool s_led_on = false;
 static bool s_buzzer_on = false;
 static bool s_initialized = false;
 
+/** 最底层的实际 GPIO 写入操作 */
 static esp_err_t set_gpio_level(gpio_num_t gpio, bool on)
 {
     return gpio_set_level(gpio, on ? 1 : 0);
 }
 
+/** 同时设置 LED 和蜂鸣器的输出状态并记录 */
 static esp_err_t apply_outputs(bool led_on, bool buzzer_on)
 {
-    /* 这是最底层的实际落地动作：把目标状态真正写到 GPIO。 */
     esp_err_t ret = set_gpio_level(s_led_gpio, led_on);
     if (ret != ESP_OK) {
         return ret;
@@ -61,10 +72,12 @@ bsp_alert_mode_t BSP_Alert_GetMode(void)
 
 esp_err_t BSP_Alert_Init(gpio_num_t led_gpio, gpio_num_t buzzer_gpio)
 {
+    /* 不允许 LED 和蜂鸣器用同一个引脚 */
     if (led_gpio < 0 || buzzer_gpio < 0 || led_gpio == buzzer_gpio) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    /* 配置两个引脚为输出模式 */
     uint64_t pin_mask = (1ULL << led_gpio) | (1ULL << buzzer_gpio);
     gpio_config_t io_conf = {
         .pin_bit_mask = pin_mask,
@@ -85,6 +98,7 @@ esp_err_t BSP_Alert_Init(gpio_num_t led_gpio, gpio_num_t buzzer_gpio)
     s_last_toggle_tick = xTaskGetTickCount();
     s_initialized = true;
 
+    /* 初始状态：全关 */
     ret = apply_outputs(false, false);
     if (ret != ESP_OK) {
         return ret;
@@ -101,22 +115,23 @@ esp_err_t BSP_Alert_SetMode(bsp_alert_mode_t mode)
     }
 
     if (mode == s_mode) {
-        return ESP_OK;
+        return ESP_OK;  /* 模式没变，不需要操作 */
     }
 
-    /* 切模式时重置节拍基准，让新模式从“当前时刻”重新开始。 */
+    /* 切换模式时：重置节拍起点，让新模式立即生效 */
     s_mode = mode;
     s_last_toggle_tick = xTaskGetTickCount();
 
+    /* 设置新模式的初始输出状态 */
     switch (s_mode) {
     case BSP_ALERT_MODE_OFF:
-        return apply_outputs(false, false);
+        return apply_outputs(false, false);     /* 全关 */
     case BSP_ALERT_MODE_NORMAL:
-        return apply_outputs(true, false);
+        return apply_outputs(true, false);      /* LED 常亮，蜂鸣器关 */
     case BSP_ALERT_MODE_REMIND:
-        return apply_outputs(true, false);
+        return apply_outputs(true, false);      /* 初始点亮，之后 Update 中翻转 */
     case BSP_ALERT_MODE_ALARM:
-        return apply_outputs(true, true);
+        return apply_outputs(true, true);       /* 初始 LED 亮 + 蜂鸣器响 */
     case BSP_ALERT_MODE_SOS:
         return apply_outputs(true, true);
     default:
@@ -130,7 +145,7 @@ esp_err_t BSP_Alert_SetOutputs(bool led_on, bool buzzer_on)
         return ESP_ERR_INVALID_STATE;
     }
 
-    s_mode = BSP_ALERT_MODE_OFF;
+    s_mode = BSP_ALERT_MODE_OFF;  /* 直接控制模式视为退出闪烁模式 */
     return apply_outputs(led_on, buzzer_on);
 }
 
@@ -143,38 +158,47 @@ esp_err_t BSP_Alert_Update(void)
     TickType_t now = xTaskGetTickCount();
     TickType_t interval = 0;
 
-    /* 更新函数只负责按当前模式推进闪烁/鸣叫节拍。 */
     switch (s_mode) {
     case BSP_ALERT_MODE_OFF:
+        /* OFF 模式：保持全关 */
         return apply_outputs(false, false);
+
     case BSP_ALERT_MODE_NORMAL:
+        /* NORMAL：LED 按 1000ms 节拍闪烁 */
         interval = pdMS_TO_TICKS(ALERT_NORMAL_BLINK_MS);
         if ((now - s_last_toggle_tick) >= interval) {
             s_last_toggle_tick = now;
-            return apply_outputs(!s_led_on, false);
+            return apply_outputs(!s_led_on, false);  /* 只翻转 LED，蜂鸣器始终关 */
         }
         return ESP_OK;
+
     case BSP_ALERT_MODE_REMIND:
+        /* REMIND：LED + 蜂鸣器按 500ms 节拍同步翻转 */
         interval = pdMS_TO_TICKS(ALERT_REMIND_BLINK_MS);
         if ((now - s_last_toggle_tick) >= interval) {
             s_last_toggle_tick = now;
             return apply_outputs(!s_led_on, !s_led_on);
         }
         return ESP_OK;
+
     case BSP_ALERT_MODE_ALARM:
+        /* ALARM：LED + 蜂鸣器按 250ms 节拍 */
         interval = pdMS_TO_TICKS(ALERT_ALARM_BLINK_MS);
         if ((now - s_last_toggle_tick) >= interval) {
             s_last_toggle_tick = now;
             return apply_outputs(!s_led_on, !s_buzzer_on);
         }
         return ESP_OK;
+
     case BSP_ALERT_MODE_SOS:
+        /* SOS：LED + 蜂鸣器按 120ms 节拍（最高频，最紧迫） */
         interval = pdMS_TO_TICKS(ALERT_SOS_BLINK_MS);
         if ((now - s_last_toggle_tick) >= interval) {
             s_last_toggle_tick = now;
             return apply_outputs(!s_led_on, !s_buzzer_on);
         }
         return ESP_OK;
+
     default:
         return ESP_ERR_INVALID_ARG;
     }

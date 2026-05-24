@@ -6,6 +6,7 @@
 #include "SpeechReplyPlayer.h"
 
 #include <inttypes.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,7 @@
 #include "esp_log.h"
 
 #define SPEECH_REPLY_PLAYER_URL "http://spectator0618.online:3000/api/speech/reply-audio"
+#define SPEECH_REPLY_PLAYER_EVENT_AUDIO_URL "http://spectator0618.online:3000/api/voice-prompts/audio?event_key=%s"
 #define SPEECH_REPLY_PLAYER_DEVICE_TOKEN ""
 #define SPEECH_REPLY_PLAYER_TIMEOUT_MS 25000
 #define SPEECH_REPLY_PLAYER_MAX_WAV_BYTES (512U * 1024U)
@@ -103,16 +105,19 @@ static esp_err_t parse_wav_info(const uint8_t *wav_data, size_t wav_bytes, wav_i
     return ESP_OK;
 }
 
-static esp_err_t download_reply_wav(uint8_t **wav_data, size_t *wav_bytes, int *status_code)
+static esp_err_t download_wav_from_url(const char *url,
+                                       uint8_t **wav_data,
+                                       size_t *wav_bytes,
+                                       int *status_code)
 {
-    if (wav_data == NULL || wav_bytes == NULL) {
+    if (url == NULL || wav_data == NULL || wav_bytes == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     *wav_data = NULL;
     *wav_bytes = 0;
 
     esp_http_client_config_t config = {
-        .url = SPEECH_REPLY_PLAYER_URL,
+        .url = url,
         .method = HTTP_METHOD_GET,
         .timeout_ms = SPEECH_REPLY_PLAYER_TIMEOUT_MS,
         .buffer_size = 2048,
@@ -195,13 +200,13 @@ static esp_err_t download_reply_wav(uint8_t **wav_data, size_t *wav_bytes, int *
     return ESP_OK;
 }
 
-esp_err_t SpeechReplyPlayer_PlayLatest(const bsp_max98357a_config_t *base_amp_config)
+static esp_err_t play_wav_from_url(const bsp_max98357a_config_t *base_amp_config, const char *url)
 {
-    if (base_amp_config == NULL) {
+    if (base_amp_config == NULL || url == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     if (!WiFiManager_IsConnected()) {
-        ESP_LOGW(TAG, "skip reply audio playback, Wi-Fi not connected");
+        ESP_LOGW(TAG, "skip wav playback, Wi-Fi not connected");
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -211,7 +216,7 @@ esp_err_t SpeechReplyPlayer_PlayLatest(const bsp_max98357a_config_t *base_amp_co
     esp_err_t ret = ESP_FAIL;
     for (uint32_t attempt = 1U; attempt <= SPEECH_REPLY_PLAYER_DOWNLOAD_RETRIES; ++attempt) {
         status_code = -1;
-        ret = download_reply_wav(&wav_data, &wav_bytes, &status_code);
+        ret = download_wav_from_url(url, &wav_data, &wav_bytes, &status_code);
         if (ret == ESP_OK) {
             break;
         }
@@ -229,7 +234,7 @@ esp_err_t SpeechReplyPlayer_PlayLatest(const bsp_max98357a_config_t *base_amp_co
     }
 
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "download reply audio failed: %s http_status=%d", esp_err_to_name(ret), status_code);
+        ESP_LOGW(TAG, "download wav failed: %s http_status=%d", esp_err_to_name(ret), status_code);
         return ret;
     }
 
@@ -277,4 +282,25 @@ esp_err_t SpeechReplyPlayer_PlayLatest(const bsp_max98357a_config_t *base_amp_co
         return ret;
     }
     return deinit_ret;
+}
+
+esp_err_t SpeechReplyPlayer_PlayLatest(const bsp_max98357a_config_t *base_amp_config)
+{
+    return play_wav_from_url(base_amp_config, SPEECH_REPLY_PLAYER_URL);
+}
+
+esp_err_t SpeechReplyPlayer_PlayEventKey(const bsp_max98357a_config_t *base_amp_config,
+                                         const char *event_key)
+{
+    if (event_key == NULL || event_key[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char url[256] = {0};
+    int written = snprintf(url, sizeof(url), SPEECH_REPLY_PLAYER_EVENT_AUDIO_URL, event_key);
+    if (written <= 0 || written >= (int)sizeof(url)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    return play_wav_from_url(base_amp_config, url);
 }
