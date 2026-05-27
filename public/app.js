@@ -1324,13 +1324,12 @@ async function uploadSpeechFile() {
 async function refreshAll() {
   refs.refreshButton.disabled = true;
 
-  const [serviceResult, snapshotResult, alertsResult, speechResult, voiceModeResult, voicePromptsResult] = await Promise.allSettled([
+  const [serviceResult, snapshotResult, alertsResult, speechResult, voiceModeResult] = await Promise.allSettled([
     loadServiceStatus(),
     loadLatestSnapshot(),
     loadAlerts(),
     loadLatestSpeech(),
     loadVoiceMode(),
-    loadVoicePrompts(),
   ]);
 
   if (serviceResult.status === "rejected") {
@@ -1355,10 +1354,6 @@ async function refreshAll() {
 
   if (voiceModeResult.status === "rejected") {
     refs.voiceModeNote.textContent = `语音模式刷新失败：${voiceModeResult.reason.message}`;
-  }
-
-  if (voicePromptsResult.status === "rejected") {
-    refs.voicePromptsStatus.textContent = `状态播报配置刷新失败：${voicePromptsResult.reason.message}`;
   }
 
   refs.refreshButton.disabled = false;
@@ -1427,5 +1422,6 @@ refs.alertsNextButton.addEventListener("click", () => {
 refs.autoRefreshState.textContent = `每 ${AUTO_REFRESH_MS / 1000} 秒`;
 activateView(viewFromHash());
 requestAnimationFrame(() => window.scrollTo(0, 0));
+loadVoicePrompts();
 refreshAll();
 setInterval(refreshAll, AUTO_REFRESH_MS);
