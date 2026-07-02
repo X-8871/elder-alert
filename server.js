@@ -53,6 +53,129 @@ const speechRecords = [];
 let latestSnapshot = null;
 let latestSpeech = null;
 let voicePrompts = [];
+let preferredRunMode = null; // null = 跟随设备默认；"DEMO" | "REAL"
+
+// ---- Agent 工具与定时器管理 ----
+const agentTools = [
+  {
+    type: "function",
+    function: {
+      name: "set_reminder",
+      description: "为老人设置一个定时提醒。老人说'提醒我吃药'、'30分钟后叫我'、'帮我定个闹钟'时调用。",
+      parameters: {
+        type: "object",
+        properties: {
+          minutes: {
+            type: "number",
+            description: "几分钟后提醒，最小1分钟，最大1440分钟（24小时）"
+          },
+          message: {
+            type: "string",
+            description: "提醒内容，用简短中文描述，例如'该吃药了'、'该喝水了'"
+          }
+        },
+        required: ["minutes", "message"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_environment",
+      description: "查看当前家中的环境传感器数据。老人问'现在温度多少'、'家里空气好不好'时调用。",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "confirm_alert",
+      description: "帮老人确认/关闭当前的提醒报警。老人说'关掉报警'、'别响了'、'我没事'时调用。仅能关闭REMIND级别提醒。",
+      parameters: { type: "object", properties: {} }
+    }
+  }
+];
+
+const activeTimers = [];
+const pendingCommands = [];
+let recentAgentActions = [];
+
+function addReminder(minutes, message) {
+  const id = `timer_${Date.now()}`;
+  const fire_at = new Date(Date.now() + minutes * 60000).toISOString();
+  const tts_text = `提醒您，${message}。`;
+  const timer = { id, minutes, message, fire_at, tts_text, fired: false };
+  activeTimers.push(timer);
+  
+  setTimeout(() => {
+    const t = activeTimers.find(x => x.id === id);
+    if (t && !t.fired) {
+      t.fired = true;
+      pendingCommands.push({
+        type: 'play_tts',
+        tts_text: t.tts_text,
+        reason: `定时提醒: ${message}`,
+        created_at: new Date().toISOString()
+      });
+      saveStore();
+    }
+  }, minutes * 60000);
+  
+  return timer;
+}
+
+function getActiveTimers() {
+  return activeTimers.filter(t => !t.fired);
+}
+
+function takePendingCommands() {
+  const cmds = [...pendingCommands];
+  pendingCommands.length = 0;
+  return cmds;
+}
+
+function executeAgentTool(name, args) {
+  recentAgentActions.push({ time: new Date().toISOString(), tool: name, args });
+  if (recentAgentActions.length > 20) recentAgentActions.shift();
+
+  switch (name) {
+    case 'set_reminder': {
+      const timer = addReminder(args.minutes, args.message);
+      return { 
+        success: true, 
+        message: `已设置${args.minutes}分钟后提醒: ${args.message}`,
+        fire_at: timer.fire_at 
+      };
+    }
+    case 'get_environment': {
+      const snap = latestSnapshot || {};
+      return {
+        temperature: snap.temperature ?? '未知',
+        humidity: snap.humidity ?? '未知',
+        lux: snap.lux ?? '未知',
+        mq2_raw: snap.mq2_raw ?? '未知',
+        state: snap.state ?? '未知',
+        risk_level: snap.risk_level ?? '未知',
+        ld2410b_presence: snap.ld2410b_presence ?? '未知',
+        current_time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+      };
+    }
+    case 'confirm_alert': {
+      const snap = latestSnapshot || {};
+      if (snap.state !== 'REMIND') {
+        return { success: false, reason: '语音只能关闭REMIND级别的提醒。当前状态不允许语音关闭，请按设备上的确认按钮。' };
+      }
+      pendingCommands.push({
+        type: 'confirm_alert',
+        created_at: new Date().toISOString()
+      });
+      return { success: true, message: '已发送确认指令，提醒将在几秒内关闭。' };
+    }
+    default:
+      return { error: `未知工具: ${name}` };
+  }
+}
+// --------------------------------
 
 const defaultVoicePromptItems = [
   {
@@ -307,6 +430,11 @@ function getVoicePromptByEventKey(eventKey) {
   return voicePrompts.find((item) => item.event_key === eventKey) || null;
 }
 
+function normalizeRunMode(value) {
+  const upper = String(value || "").trim().toUpperCase();
+  return upper === "DEMO" || upper === "REAL" ? upper : null;
+}
+
 function isDeviceOffline() {
   if (!latestSnapshot?.received_at) {
     return true;
@@ -408,22 +536,26 @@ function buildAiSystemPrompt(mode) {
   if (normalizedMode === "OFFLINE") {
     return "";
   }
+  
+  const timers = getActiveTimers();
+  const timerInfo = timers.length > 0 
+    ? `\n当前活跃提醒: ${timers.map(t => `${t.message}(${t.fire_at})`).join('、')}`
+    : '\n当前没有活跃提醒。';
+
   if (normalizedMode === "INTERACT") {
     return (
       "你是独居老人家里的自然对话语音助手。回答要像正常聊天，简短、亲切、有上下文感，最多60个汉字。" +
       "可以陪聊、问候、解释简单问题，也可以结合设备状态做温和提醒。" +
-      "不要假装已经打电话、发消息、控制设备或通知家属。" +
-      "医疗、用药、诊断问题要建议咨询医生或家属。" +
-      "危险、求救、不舒服或紧急情况，要提醒按红色SOS按钮或联系家属。"
+      "你可以使用工具定闹钟、查数据、关提醒。危险求救请提醒按SOS键。" +
+      "医疗、用药、诊断问题要建议咨询医生或家属。" + timerInfo
     );
   }
 
   return (
     "你是独居老人家里的安全看护语音助手。直接回答老人问题，最多40个汉字。" +
-    "优先关注安全、风险解释、确认键和SOS求助。" +
-    "不要反复说我听到了，不要复述用户原话，不要列设备状态，不要输出分析过程。" +
-    "医疗、用药、诊断问题要建议咨询医生或家属。" +
-    "危险、求救、不舒服或紧急情况，要提醒按SOS键或联系家属。"
+    "优先关注安全、风险解释。可以使用工具定闹钟、查数据、关提醒。" +
+    "危险求救请提醒按SOS键。" +
+    "不要反复说我听到了，不要复述用户原话，不要列设备状态，不要输出分析过程。" + timerInfo
   );
 }
 
@@ -685,46 +817,70 @@ async function generateAiReply(transcript, mode = currentVoiceMode) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number.isFinite(aiReplyConfig.timeoutMs) ? aiReplyConfig.timeoutMs : 12000);
-  const payload = {
-    model: aiReplyConfig.model,
-    messages: [
-      {
-        role: "system",
-        content: buildAiSystemPrompt(normalizedMode),
-      },
-      {
-        role: "user",
-        content:
-          `老人刚说：${text}\n` +
-          `设备状态仅供你内部判断，不要复述：\n${getLatestDeviceContext()}\n` +
-          "请给出一句自然、有用的回复。",
-      },
-    ],
-    temperature: 0.5,
-    max_tokens: 90,
-  };
+  
+  let messages = [
+    { role: "system", content: buildAiSystemPrompt(normalizedMode) },
+    {
+      role: "user",
+      content:
+        `老人刚说：${text}\n` +
+        `设备状态仅供你内部判断，不要复述：\n${getLatestDeviceContext()}\n` +
+        "请给出一句自然、有用的回复。",
+    }
+  ];
 
   try {
-    const response = await fetch(`${aiReplyConfig.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${aiReplyConfig.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    const data = await response.json().catch(() => null);
+    for (let round = 0; round < 3; round++) {
+      const payload = {
+        model: aiReplyConfig.model,
+        messages,
+        temperature: 0.5,
+        max_tokens: 150,
+        tools: agentTools,
+        tool_choice: "auto"
+      };
 
-    if (!response.ok) {
-      const message = data?.error?.message || response.statusText || "AI reply request failed";
-      const error = new Error(message);
-      error.statusCode = response.status;
-      throw error;
+      const response = await fetch(`${aiReplyConfig.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${aiReplyConfig.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const message = data?.error?.message || response.statusText || "AI reply request failed";
+        const error = new Error(message);
+        error.statusCode = response.status;
+        throw error;
+      }
+
+      const choice = data?.choices?.[0];
+      if (!choice) return null;
+
+      if (choice.finish_reason === 'tool_calls' || choice.message?.tool_calls) {
+        messages.push(choice.message);
+        
+        for (const tc of choice.message.tool_calls) {
+          let args = {};
+          try { args = JSON.parse(tc.function.arguments); } catch(e) {}
+          const result = executeAgentTool(tc.function.name, args);
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify(result)
+          });
+        }
+        continue;
+      }
+
+      const reply = extractAiReply(data);
+      return reply || buildFallbackAiReply(text, normalizedMode);
     }
-
-    const reply = extractAiReply(data);
-    return reply || buildFallbackAiReply(text, normalizedMode);
+    return buildFallbackAiReply(text, normalizedMode);
   } finally {
     clearTimeout(timeout);
   }
@@ -891,6 +1047,7 @@ function loadStore() {
       ? parsed.latestSpeech
       : null;
     voicePrompts = mergeVoicePrompts(parsed.voicePrompts);
+    preferredRunMode = normalizeRunMode(parsed.preferredRunMode);
   } catch (error) {
     console.warn(`[store] failed to load ${storePath}: ${error.message}`);
   }
@@ -906,6 +1063,7 @@ function saveStore() {
       latestSpeech,
       speechRecords,
       voicePrompts,
+      preferredRunMode,
     };
     fs.writeFileSync(storePath, JSON.stringify(payload, null, 2), "utf8");
   } catch (error) {
@@ -982,10 +1140,39 @@ app.post("/api/voice-mode", requireDashboardAuth, (req, res) => {
   });
 });
 
+
+// ---- 运行模式（DEMO/REAL） ----
+app.get("/api/run-mode", requireDashboardAuth, (req, res) => {
+  const deviceMode = latestSnapshot?.run_mode
+    ? String(latestSnapshot.run_mode).trim().toUpperCase()
+    : null;
+  res.json({
+    ok: true,
+    deviceRunMode: deviceMode || null,
+    preferredRunMode,
+    effectiveRunMode: preferredRunMode || deviceMode || "DEMO",
+  });
+});
+
+app.post("/api/run-mode", requireDashboardAuth, (req, res) => {
+  preferredRunMode = normalizeRunMode(req.body?.mode);
+  saveStore();
+  const deviceMode = latestSnapshot?.run_mode
+    ? String(latestSnapshot.run_mode).trim().toUpperCase()
+    : null;
+  res.json({
+    ok: true,
+    deviceRunMode: deviceMode || null,
+    preferredRunMode,
+    effectiveRunMode: preferredRunMode || deviceMode || "DEMO",
+  });
+});
+
 app.get(voicePromptsPath, requireDashboardAuth, (req, res) => {
   res.json({
     ok: true,
     items: voicePrompts,
+      preferredRunMode,
   });
 });
 
@@ -1030,6 +1217,7 @@ app.post(voicePromptsPath, requireDashboardAuth, (req, res) => {
   return res.json({
     ok: true,
     items: voicePrompts,
+      preferredRunMode,
   });
 });
 
@@ -1080,6 +1268,13 @@ app.get("/api/status", requireDashboardAuth, (req, res) => {
     totalSpeechRecords: speechRecords.length,
     lastReceivedAt: latestSnapshot ? latestSnapshot.received_at : null,
     lastSpeechAt: latestSpeech ? latestSpeech.received_at : null,
+    deviceRunMode: latestSnapshot?.run_mode
+      ? String(latestSnapshot.run_mode).trim().toUpperCase()
+      : null,
+    preferredRunMode,
+    effectiveRunMode: preferredRunMode || (latestSnapshot?.run_mode
+      ? String(latestSnapshot.run_mode).trim().toUpperCase()
+      : "DEMO"),
   });
 });
 
@@ -1171,6 +1366,37 @@ app.get(speechReplyAudioPath, requireDashboardOrDeviceToken, async (req, res) =>
   }
 });
 
+app.get("/api/agent/notification-audio", requireDashboardOrDeviceToken, async (req, res) => {
+  try {
+    const text = String(req.query?.text || "").trim();
+    if (!text) return res.status(400).json({ ok: false, message: "text is required" });
+
+    const audioBuffer = await generateReplyAudio(text);
+    res.set({
+      "Content-Type": mimeTypeForAudioFormat(ttsConfig.format),
+      "Content-Length": audioBuffer.length,
+      "Cache-Control": "no-store",
+    });
+    return res.status(200).send(audioBuffer);
+  } catch (error) {
+    console.warn(`[agent-tts] failed: ${describeError(error)}`);
+    return res.status(error.statusCode || 500).json({ ok: false, message: describeError(error) });
+  }
+});
+
+app.get("/api/agent/status", requireDashboardAuth, (req, res) => {
+  res.json({
+    ok: true,
+    activeTimers: getActiveTimers().map(t => ({
+      ...t,
+      type: "定时提醒",
+      description: t.message,
+      expiresAt: new Date(t.fire_at).getTime()
+    })),
+    recentActions: recentAgentActions
+  });
+});
+
 app.post(alertPath, requireDeviceToken, (req, res) => {
   const validationError = validateAlertPayload(req.body);
   if (validationError) {
@@ -1200,10 +1426,18 @@ app.post(alertPath, requireDeviceToken, (req, res) => {
     `[telemetry] mode=${reportMode} device=${record.device_id} state=${record.state} risk=${record.risk_level} reason=${record.reason}`
   );
 
+  const pendingCmds = takePendingCommands();
+  for (const cmd of pendingCmds) {
+    if (cmd.type === 'play_tts' && !cmd.url && cmd.tts_text) {
+      cmd.url = `/api/agent/notification-audio?text=${encodeURIComponent(cmd.tts_text)}`;
+    }
+  }
+
   return res.status(200).json({
     ok: true,
     message: "telemetry received",
     count: alerts.length,
+    commands: pendingCmds.length > 0 ? pendingCmds : undefined,
   });
 });
 

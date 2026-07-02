@@ -66,6 +66,9 @@ const refs = {
   modeThresholdLux: document.getElementById("mode-threshold-lux"),
   modeThresholdMq2: document.getElementById("mode-threshold-mq2"),
   modeThresholdEscalation: document.getElementById("mode-threshold-escalation"),
+  modePreferenceLabel: document.getElementById("mode-preference-label"),
+  modeEffectiveNote: document.getElementById("mode-effective-note"),
+  modeButtons: Array.from(document.querySelectorAll('[data-run-mode]')),
   metricTick: document.getElementById("metric-tick"),
   metricReason: document.getElementById("metric-reason"),
   metricStateCard: document.getElementById("metric-state-card"),
@@ -96,6 +99,8 @@ const refs = {
   voicePromptsStatus: document.getElementById("voice-prompts-status"),
   voicePromptsList: document.getElementById("voice-prompts-list"),
   voicePromptsSaveButton: document.getElementById("voice-prompts-save-button"),
+  agentActiveTimers: document.getElementById("agent-active-timers"),
+  agentRecentActions: document.getElementById("agent-recent-actions"),
 };
 
 const AUTO_REFRESH_MS = 3000;
@@ -161,6 +166,7 @@ let latestAlerts = [];
 let currentAlertStateFilter = "ALL";
 let currentView = "";
 let voicePromptItems = [];
+let serviceStatus = null;
 const VIEW_BY_HASH = {
   "#hero-card": "status",
   "#snapshot-panel": "detect",
@@ -810,7 +816,7 @@ function renderLatestSnapshot(item) {
     refs.riskCategory.textContent = "-";
     renderMmwavePanel(null);
     renderHealthPanel(null);
-    renderModePanel(null);
+    renderModePanel(null, serviceStatus);
     renderMiniChart(null);
     return;
   }
@@ -859,7 +865,7 @@ function renderLatestSnapshot(item) {
   refs.riskCategory.textContent = category.label;
   renderMmwavePanel(item);
   renderHealthPanel(item);
-  renderModePanel(item);
+  renderModePanel(item, serviceStatus);
   renderMiniChart(item);
 }
 
@@ -967,13 +973,23 @@ function renderHealthPanel(item) {
     `quiet-pill ${reportedCount > 0 && okCount === reportedCount ? "state-normal" : "state-remind"}`;
 }
 
-function renderModePanel(item) {
+function renderModePanel(item, serviceStatus) {
   const mode = formatValue(item?.run_mode);
   const profile = getRuleProfile(mode);
   const modeText = mode === "REAL" ? "真实模式" : mode === "DEMO" ? "演示模式" : "未上报";
   refs.modeCurrent.textContent = modeText;
   refs.modeCurrent.className = `quiet-pill ${mode === "REAL" ? "state-normal" : mode === "DEMO" ? "state-remind" : "state-idle"}`;
   refs.modeCurrentDetail.textContent = modeText;
+
+  if (serviceStatus) {
+    const pref = serviceStatus.preferredRunMode;
+    const eff = serviceStatus.effectiveRunMode;
+    refs.modePreferenceLabel.textContent =
+      pref ? (pref === "REAL" ? "真实模式" : "演示模式") : "跟随设备";
+    refs.modeEffectiveNote.textContent =
+      `当前生效：${eff === "REAL" ? "真实模式" : "演示模式"}（${pref ? "服务器偏好" : "设备上报"}）。切换到真实模式后需重启设备或等待固件轮询。`;
+    highlightModeButton(pref);
+  }
   refs.modeNoMotion.textContent = formatMs(item?.no_motion_remind_ms ?? profile.noMotionRemindMs);
   refs.modeDemoTimeout.textContent = formatMs(item?.remind_confirm_timeout_demo_ms ?? 15000);
   refs.modeRealTimeout.textContent = formatMs(item?.remind_confirm_timeout_real_ms ?? 300000);
@@ -985,6 +1001,46 @@ function renderModePanel(item) {
     `提醒 >= ${profile.mq2RemindRaw} ${profile.mq2RemindDurationText}；告警 >= ${profile.mq2AlarmRaw} ${profile.mq2AlarmDurationText}`;
   refs.modeThresholdEscalation.textContent =
     `${profile.escalationText}；MQ2 恢复需 ${profile.mq2RecoverText}`;
+}
+
+
+function highlightModeButton(mode) {
+  for (const button of refs.modeButtons) {
+    const buttonMode = button.dataset.runMode || "";
+    button.className = buttonMode === (mode || "") ? "active" : "";
+  }
+}
+
+async function setRunMode(mode) {
+  try {
+    const response = await fetch("/api/run-mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+      cache: "no-store",
+    });
+    if (response.status === 401) {
+      window.location.href = "/login.html";
+      return;
+    }
+    if (!response.ok) {
+      throw new Error("模式切换失败");
+    }
+    const data = await response.json();
+    if (serviceStatus) {
+      serviceStatus.preferredRunMode = data.preferredRunMode;
+      serviceStatus.effectiveRunMode = data.effectiveRunMode;
+    }
+    refs.modePreferenceLabel.textContent =
+      data.preferredRunMode
+        ? data.preferredRunMode === "REAL" ? "真实模式" : "演示模式"
+        : "跟随设备";
+    refs.modeEffectiveNote.textContent =
+      `当前生效：${data.effectiveRunMode === "REAL" ? "真实模式" : "演示模式"}（${data.preferredRunMode ? "服务器偏好" : "设备上报"}）。切换到真实模式后需重启设备或等待固件轮询。`;
+    highlightModeButton(data.preferredRunMode || "");
+  } catch (error) {
+    refs.modeEffectiveNote.textContent = `模式切换失败：${error.message}`;
+  }
 }
 
 function renderAlerts(items) {
@@ -1097,6 +1153,36 @@ function renderServiceStatus(data) {
   renderVoiceMode(data.voiceMode, data.offlineVoiceReply, data.selectedVoiceMode || data.voiceMode, data.deviceOffline);
 }
 
+function renderAgentStatus(data) {
+  if (!data) return;
+  
+  if (data.activeTimers && data.activeTimers.length > 0) {
+    refs.agentActiveTimers.innerHTML = data.activeTimers.map(t => {
+      const remainingMs = t.expiresAt - Date.now();
+      const mins = Math.max(0, Math.ceil(remainingMs / 60000));
+      return `<li><strong>${t.type}</strong> - ${mins} 分钟后触发 (${t.description})</li>`;
+    }).join("");
+  } else {
+    refs.agentActiveTimers.innerHTML = `<li><span class="quiet-pill">当前无活跃定时器</span></li>`;
+  }
+
+  if (data.recentActions && data.recentActions.length > 0) {
+    refs.agentRecentActions.innerHTML = data.recentActions.map(a => {
+      const time = new Date(a.time).toLocaleTimeString();
+      return `<li><span class="quiet-pill">${time}</span> <strong>${a.tool}</strong>: ${JSON.stringify(a.args)}</li>`;
+    }).join("");
+  } else {
+    refs.agentRecentActions.innerHTML = `<li><span class="quiet-pill">暂无操作记录</span></li>`;
+  }
+}
+
+async function loadAgentStatus() {
+  const response = await fetch("/api/agent/status", { cache: "no-store" });
+  if (!response.ok) return;
+  const data = await response.json();
+  renderAgentStatus(data);
+}
+
 async function loadServiceStatus() {
   const response = await fetch("/api/status", { cache: "no-store" });
   if (response.status === 401) {
@@ -1108,6 +1194,7 @@ async function loadServiceStatus() {
   }
 
   const data = await response.json();
+  serviceStatus = data;
   renderServiceStatus(data);
 }
 
@@ -1272,15 +1359,32 @@ async function previewVoicePrompt(eventKey, button) {
     return;
   }
 
+  const item = voicePromptItems.find((v) => v.event_key === eventKey);
+  if (!item) {
+    refs.voicePromptsStatus.textContent = "未找到播报项：" + eventKey;
+    return;
+  }
+  if (!item.enabled) {
+    refs.voicePromptsStatus.textContent = "“" + (item.label || eventKey) + "” 未启用，请先勾选「启用」并保存。";
+    return;
+  }
+  if (!item.tts_text) {
+    refs.voicePromptsStatus.textContent = "“" + (item.label || eventKey) + "” 播报文案为空，请先填写。";
+    return;
+  }
+
   button.disabled = true;
-  refs.voicePromptsStatus.textContent = `正在试听 ${eventKey}...`;
+  refs.voicePromptsStatus.textContent = "正在试听 " + (item.label || eventKey) + "...";
 
   try {
-    const audio = new Audio(`/api/voice-prompts/audio?event_key=${encodeURIComponent(eventKey)}&t=${Date.now()}`);
+    const audio = document.getElementById("voice-preview-audio");
+    audio.src = "/api/voice-prompts/audio?event_key=" + encodeURIComponent(eventKey) + "&t=" + Date.now();
+    audio.load();
     await audio.play();
-    refs.voicePromptsStatus.textContent = `正在试听 ${eventKey}。`;
+    refs.voicePromptsStatus.textContent = "正在试听 " + (item.label || eventKey) + "。";
   } catch (error) {
-    refs.voicePromptsStatus.textContent = `试听失败：${error.message}`;
+    refs.voicePromptsStatus.textContent = "试听失败：" + error.message + "。请确认服务器 TTS 配置正常。";
+    console.warn("previewVoicePrompt failed:", eventKey, error);
   } finally {
     button.disabled = false;
   }
@@ -1324,12 +1428,13 @@ async function uploadSpeechFile() {
 async function refreshAll() {
   refs.refreshButton.disabled = true;
 
-  const [serviceResult, snapshotResult, alertsResult, speechResult, voiceModeResult] = await Promise.allSettled([
+  const [serviceResult, snapshotResult, alertsResult, speechResult, voiceModeResult, agentResult] = await Promise.allSettled([
     loadServiceStatus(),
     loadLatestSnapshot(),
     loadAlerts(),
     loadLatestSpeech(),
     loadVoiceMode(),
+    loadAgentStatus(),
   ]);
 
   if (serviceResult.status === "rejected") {
@@ -1381,6 +1486,9 @@ refs.voicePromptsList.addEventListener("click", (event) => {
 });
 for (const button of refs.voiceModeButtons) {
   button.addEventListener("click", () => setVoiceMode(button.dataset.voiceMode));
+}
+for (const button of refs.modeButtons) {
+  button.addEventListener("click", () => setRunMode(button.dataset.runMode || null));
 }
 for (const item of refs.navItems) {
   item.addEventListener("click", (event) => {

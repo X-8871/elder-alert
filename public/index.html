@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>居家安全看护面板</title>
-    <link rel="stylesheet" href="styles.css?v=20260518-1645" />
+    <link rel="stylesheet" href="styles.css?v=20260527-1500" />
   </head>
   <body>
     <div class="app-frame">
@@ -249,6 +249,30 @@
           </div>
         </article>
 
+        
+        <article id="agent-panel" class="panel agent-panel" data-view="mode">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">智能管家</p>
+              <h2>Agent 活动状态</h2>
+            </div>
+          </div>
+          <div class="detail-grid agent-grid">
+            <div>
+              <span class="section-label">活跃定时器 (Active Timers)</span>
+              <ul id="agent-active-timers" class="agent-timers-list">
+                <li>加载中...</li>
+              </ul>
+            </div>
+            <div>
+              <span class="section-label">最近操作 (Recent Actions)</span>
+              <ul id="agent-recent-actions" class="agent-actions-list">
+                <li>加载中...</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
         <article id="mode-panel" class="panel mode-panel" data-view="mode">
           <div class="panel-head">
             <div>
@@ -256,6 +280,18 @@
               <h2>运行模式与系统状态</h2>
             </div>
             <span id="mode-current" class="quiet-pill">未上报</span>
+          </div>
+          <div class="mode-switch-card" aria-label="运行模式切换">
+            <div>
+              <span class="section-label">模式偏好</span>
+              <strong id="mode-preference-label">跟随设备</strong>
+            </div>
+            <div class="mode-switch-options" role="group" aria-label="运行模式">
+              <button type="button" data-run-mode="DEMO">演示模式</button>
+              <button type="button" data-run-mode="REAL">真实模式</button>
+              <button type="button" data-run-mode="">跟随设备</button>
+            </div>
+            <p id="mode-effective-note" class="mode-note">生效模式以设备上报为准。切换偏好后需重启设备或等待固件轮询。</p>
           </div>
             <div class="detail-grid mode-grid">
               <div><span>当前模式</span><strong id="mode-current-detail">-</strong></div>
@@ -362,6 +398,7 @@
       </footer>
     </div>
 
-    <script src="app.js?v=20260518-1645"></script>
+    <script src="app.js?v=20260527-1500"></script>
+    <audio id="voice-preview-audio" hidden></audio>
   </body>
 </html>
