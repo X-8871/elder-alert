@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const app = express();
+app.disable("x-powered-by");
 const port = process.env.PORT || 3000;
 const alertPath = "/api/alert";
 const latestPath = "/api/latest";
@@ -15,8 +16,14 @@ const voicePromptAudioPath = "/api/voice-prompts/audio";
 const maxAlerts = 50;
 const maxSpeechRecords = 10;
 const maxSpeechAudioBytes = 600 * 1024;
-const dashboardUser = "olderalert";
-const dashboardPassword = "88888888";
+const dashboardUser = (process.env.ELDER_DASHBOARD_USER || "").trim();
+const dashboardPassword = process.env.ELDER_DASHBOARD_PASSWORD || "";
+const dashboardCookieSecure = !["0", "false", "no"].includes(
+  String(process.env.ELDER_DASHBOARD_COOKIE_SECURE || "true").trim().toLowerCase()
+);
+if (!dashboardUser || !dashboardPassword) {
+  throw new Error("缺少 ELDER_DASHBOARD_USER 或 ELDER_DASHBOARD_PASSWORD 环境变量");
+}
 const dashboardSessions = new Set();
 const manualVoiceModes = new Set(["CARE", "INTERACT"]);
 const offlineVoiceReply = "已接收到信息。如有紧急情况，请按红色按钮。网络暂不可用。";
@@ -47,6 +54,7 @@ const tencentAsrConfig = {
 };
 const dataDir = path.join(__dirname, "data");
 const storePath = path.join(dataDir, "alerts-store.json");
+const agentConfigPath = path.join(dataDir, "agent-config.json");
 
 const alerts = [];
 const speechRecords = [];
@@ -55,6 +63,7 @@ let latestSpeech = null;
 let voicePrompts = [];
 let preferredRunMode = null; // null = 跟随设备默认；"DEMO" | "REAL"
 
+let agentConfig = { enabledTools: [] }; // Agent 工具配置
 // ---- Agent 工具与定时器管理 ----
 const agentTools = [
   {
@@ -93,7 +102,114 @@ const agentTools = [
       description: "帮老人确认/关闭当前的提醒报警。老人说'关掉报警'、'别响了'、'我没事'时调用。仅能关闭REMIND级别提醒。",
       parameters: { type: "object", properties: {} }
     }
-  }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_temperature",
+      description: "查询当前室内温度和湿度",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_current_time",
+      description: "查询当前时间",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_light_level",
+      description: "查询光照强度，判断白天还是晚上",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_air_quality",
+      description: "查询空气质量状态（MQ2传感器）",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "show_message_on_screen",
+      description: "在TFT屏幕上显示提醒消息",
+      parameters: {
+        type: "object",
+        properties: {
+          message: { type: "string", description: "要显示的消息" }
+        },
+        required: ["message"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "beep_once",
+      description: "蜂鸣器响一次作为提醒",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_timer_reminder",
+      description: "设置定时语音播报提醒",
+      parameters: {
+        type: "object",
+        properties: {
+          minutes: { type: "number", description: "几分钟后提醒" },
+          message: { type: "string", description: "提醒内容" }
+        },
+        required: ["minutes", "message"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_active_reminders",
+      description: "列出当前所有活跃的定时提醒",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancel_reminder",
+      description: "取消指定的定时提醒",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "提醒ID" }
+        },
+        required: ["id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_recent_alerts",
+      description: "查询最近的异常事件记录",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_motion_summary",
+      description: "获取毫米波活动摘要（有人/无人/活动/静止）",
+      parameters: { type: "object", properties: {} }
+    }
+  },
 ];
 
 const activeTimers = [];
@@ -170,6 +286,112 @@ function executeAgentTool(name, args) {
         created_at: new Date().toISOString()
       });
       return { success: true, message: '已发送确认指令，提醒将在几秒内关闭。' };
+    }
+    case 'get_temperature': {
+      const snap = latestSnapshot || {};
+      return {
+        temperature: snap.temperature ?? '未知',
+        humidity: snap.humidity ?? '未知',
+        message: `当前温度 ${snap.temperature ?? '未知'}°C，湿度 ${snap.humidity ?? '未知'}%`
+      };
+    }
+    case 'get_current_time': {
+      const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+      return { current_time: now, message: `现在是${now}` };
+    }
+    case 'get_light_level': {
+      const snap = latestSnapshot || {};
+      const lux = snap.lux ?? 0;
+      const isDaytime = lux > 50;
+      return {
+        lux: lux,
+        is_daytime: isDaytime,
+        message: `当前光照 ${lux} lux，${isDaytime ? '白天' : '晚上'}`
+      };
+    }
+    case 'get_air_quality': {
+      const snap = latestSnapshot || {};
+      const mq2 = snap.mq2_raw ?? 0;
+      const quality = mq2 > 1200 ? '异常' : '正常';
+      return {
+        mq2_raw: mq2,
+        quality: quality,
+        message: `空气质量${quality}，MQ2读数 ${mq2}`
+      };
+    }
+    case 'show_message_on_screen': {
+      pendingCommands.push({
+        type: 'show_screen_message',
+        message: args.message || '',
+        created_at: new Date().toISOString()
+      });
+      return { success: true, message: `已发送屏幕消息: ${args.message}` };
+    }
+    case 'beep_once': {
+      pendingCommands.push({
+        type: 'beep_once',
+        created_at: new Date().toISOString()
+      });
+      return { success: true, message: '已发送蜂鸣指令' };
+    }
+    case 'set_timer_reminder': {
+      const timer = addReminder(args.minutes, args.message);
+      return {
+        success: true,
+        message: `已设置${args.minutes}分钟后提醒: ${args.message}`,
+        fire_at: timer.fire_at
+      };
+    }
+    case 'list_active_reminders': {
+      const timers = getActiveTimers();
+      return {
+        count: timers.length,
+        reminders: timers.map(t => ({
+          id: t.id,
+          message: t.message,
+          fire_at: t.fire_at,
+          remaining_minutes: Math.ceil((new Date(t.fire_at) - Date.now()) / 60000)
+        })),
+        message: timers.length > 0 ? `当前有${timers.length}个活跃提醒` : '当前没有活跃提醒'
+      };
+    }
+    case 'cancel_reminder': {
+      const index = activeTimers.findIndex(t => t.id === args.id);
+      if (index === -1) {
+        return { success: false, message: '未找到该提醒' };
+      }
+      activeTimers.splice(index, 1);
+      return { success: true, message: '提醒已取消' };
+    }
+    case 'get_recent_alerts': {
+      const recentAlerts = alerts.slice(0, 5);
+      return {
+        count: recentAlerts.length,
+        alerts: recentAlerts.map(a => ({
+          state: a.state,
+          risk_level: a.risk_level,
+          reason: a.reason,
+          received_at: a.received_at
+        })),
+        message: recentAlerts.length > 0 ? `最近${recentAlerts.length}条异常事件` : '暂无异常事件'
+      };
+    }
+    case 'get_motion_summary': {
+      const snap = latestSnapshot || {};
+      const presence = snap.ld2410b_presence ?? '未知';
+      const moving = snap.ld2410b_moving_distance ?? 0;
+      const stationary = snap.ld2410b_stationary_distance ?? 0;
+      let status = '未知';
+      if (presence === 'none') status = '无人';
+      else if (moving > 0) status = '有活动';
+      else if (stationary > 0) status = '静止';
+      return {
+        presence: presence,
+        moving_distance: moving,
+        stationary_distance: stationary,
+        status: status,
+        message: `毫米波检测：${status}`
+      };
     }
     default:
       return { error: `未知工具: ${name}` };
@@ -319,14 +541,19 @@ function getDashboardSession(req) {
 }
 
 function setDashboardSessionCookie(res, token) {
+  const secureAttribute = dashboardCookieSecure ? "; Secure" : "";
   res.setHeader(
     "Set-Cookie",
-    `elder_alert_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200`
+    `elder_alert_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200${secureAttribute}`
   );
 }
 
 function clearDashboardSessionCookie(res) {
-  res.setHeader("Set-Cookie", "elder_alert_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+  const secureAttribute = dashboardCookieSecure ? "; Secure" : "";
+  res.setHeader(
+    "Set-Cookie",
+    `elder_alert_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttribute}`
+  );
 }
 
 function requireDashboardAuth(req, res, next) {
@@ -695,6 +922,22 @@ function describeError(error) {
   return parts.join(" ");
 }
 
+function sendPublicTtsError(res, error, logPrefix) {
+  console.warn(`[${logPrefix}] failed: ${describeError(error)}`);
+  const isInvalidText = error?.statusCode === 400;
+  const isNotConfigured = error?.statusCode === 503;
+  const statusCode = isInvalidText ? 400 : isNotConfigured ? 503 : 502;
+  const code = isInvalidText ? "tts_text_invalid" : isNotConfigured ? "tts_not_configured" : "tts_unavailable";
+  const message = isInvalidText
+    ? "语音文本无效"
+    : isNotConfigured
+      ? "语音生成服务未配置"
+      : "语音生成服务暂不可用，请稍后重试";
+
+  res.set("Cache-Control", "no-store");
+  return res.status(statusCode).json({ ok: false, code, message });
+}
+
 function sha256Hex(value) {
   return crypto.createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -967,17 +1210,9 @@ async function generateReplyAudio(text) {
     });
 
     if (!response.ok) {
-      const data = await response.json().catch(() => null);
-      const providerMessage =
-        data?.error?.message ||
-        data?.message ||
-        data?.Message ||
-        data?.msg ||
-        response.statusText ||
-        "TTS request failed";
-      const message = `${providerMessage}${data ? ` body=${JSON.stringify(data).slice(0, 500)}` : ""}`;
-      const error = new Error(message);
-      error.statusCode = response.status;
+      const error = new Error(`TTS provider request failed with HTTP ${response.status}`);
+      error.statusCode = 502;
+      error.upstreamStatusCode = response.status;
       throw error;
     }
 
@@ -1068,6 +1303,40 @@ function saveStore() {
     fs.writeFileSync(storePath, JSON.stringify(payload, null, 2), "utf8");
   } catch (error) {
     console.warn(`[store] failed to save ${storePath}: ${error.message}`);
+  }
+}
+
+// ---- Agent 配置加载和保存 ----
+function loadAgentConfig() {
+  try {
+    ensureDataDir();
+    if (!fs.existsSync(agentConfigPath)) {
+      agentConfig = {
+        enabledTools: agentTools.map(t => t.function.name)
+      };
+      return;
+    }
+    const raw = fs.readFileSync(agentConfigPath, "utf8");
+    const parsed = JSON.parse(raw);
+    agentConfig = {
+      enabledTools: Array.isArray(parsed.enabledTools) ? parsed.enabledTools : []
+    };
+    console.log(`[agent-config] loaded ${agentConfig.enabledTools.length} enabled tools`);
+  } catch (error) {
+    console.warn(`[agent-config] failed to load ${agentConfigPath}: ${error.message}`);
+    agentConfig = {
+      enabledTools: agentTools.map(t => t.function.name)
+    };
+  }
+}
+
+function saveAgentConfig() {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(agentConfigPath, JSON.stringify(agentConfig, null, 2), "utf8");
+    console.log(`[agent-config] saved ${agentConfig.enabledTools.length} enabled tools`);
+  } catch (error) {
+    console.warn(`[agent-config] failed to save ${agentConfigPath}: ${error.message}`);
   }
 }
 
@@ -1291,6 +1560,39 @@ app.get("/api/alerts", requireDashboardAuth, (req, res) => {
     count: alerts.length,
     alerts,
   });
+
+// ---- Agent 配置 API ----
+app.get("/api/agent-config", requireDashboardAuth, (req, res) => {
+  res.json({
+    ok: true,
+    enabledTools: agentConfig.enabledTools,
+    availableTools: agentTools.map(t => ({
+      name: t.function.name,
+      description: t.function.description
+    }))
+  });
+});
+
+app.post("/api/agent-config", requireDashboardAuth, (req, res) => {
+  const enabledTools = Array.isArray(req.body?.enabledTools) ? req.body.enabledTools : null;
+  console.log('[agent-config] POST request body:', JSON.stringify(req.body));
+  if (!enabledTools) {
+    return res.status(400).json({ ok: false, message: "enabledTools is required" });
+  }
+  const validToolNames = new Set(agentTools.map(t => t.function.name));
+  for (const toolName of enabledTools) {
+    if (!validToolNames.has(toolName)) {
+      return res.status(400).json({ ok: false, message: `invalid tool name: ${toolName}` });
+    }
+  }
+  agentConfig.enabledTools = enabledTools;
+  saveAgentConfig();
+  res.json({
+    ok: true,
+    enabledTools: agentConfig.enabledTools
+  });
+});
+
 });
 
 app.get(speechLatestPath, requireDashboardAuth, (req, res) => {
@@ -1330,11 +1632,7 @@ app.get(voicePromptAudioPath, requireDashboardOrDeviceToken, async (req, res) =>
     });
     return res.status(200).send(audioBuffer);
   } catch (error) {
-    console.warn(`[voice-prompt-tts] failed: ${describeError(error)}`);
-    return res.status(error.statusCode || 500).json({
-      ok: false,
-      message: describeError(error),
-    });
+    return sendPublicTtsError(res, error, "voice-prompt-tts");
   }
 });
 
@@ -1358,11 +1656,7 @@ app.get(speechReplyAudioPath, requireDashboardOrDeviceToken, async (req, res) =>
     });
     return res.status(200).send(audioBuffer);
   } catch (error) {
-    console.warn(`[speech-tts] failed: ${describeError(error)}`);
-    return res.status(error.statusCode || 500).json({
-      ok: false,
-      message: describeError(error),
-    });
+    return sendPublicTtsError(res, error, "speech-tts");
   }
 });
 
@@ -1379,8 +1673,7 @@ app.get("/api/agent/notification-audio", requireDashboardOrDeviceToken, async (r
     });
     return res.status(200).send(audioBuffer);
   } catch (error) {
-    console.warn(`[agent-tts] failed: ${describeError(error)}`);
-    return res.status(error.statusCode || 500).json({ ok: false, message: describeError(error) });
+    return sendPublicTtsError(res, error, "agent-tts");
   }
 });
 
@@ -1510,6 +1803,7 @@ app.post(
 );
 
 loadStore();
+loadAgentConfig();
 
 app.listen(port, () => {
   console.log(`Local dashboard running at http://localhost:${port}`);

@@ -93,6 +93,7 @@ const refs = {
   speechAiReply: document.getElementById("speech-ai-reply"),
   speechAiMeta: document.getElementById("speech-ai-meta"),
   speechAiAudio: document.getElementById("speech-ai-audio"),
+  voicePreviewAudio: document.getElementById("voice-preview-audio"),
   voiceModeTitle: document.getElementById("voice-mode-title"),
   voiceModeButtons: Array.from(document.querySelectorAll("[data-voice-mode]")),
   voiceModeNote: document.getElementById("voice-mode-note"),
@@ -108,6 +109,7 @@ const refs = {
 const AUTO_REFRESH_MS = 3000;
 const ALERTS_PAGE_SIZE = 6;
 const STALE_AFTER_MS = 18000;
+let failedSpeechAudioUrl = "";
 const OFFLINE_AFTER_MS = 45000;
 const RISK_THRESHOLDS = {
   humidityDisplayPercent: 100,
@@ -1239,6 +1241,7 @@ function renderLatestSpeech(item) {
     refs.speechAiMeta.textContent = "配置云端模型后生成简短回复。";
     refs.speechAiAudio.hidden = true;
     refs.speechAiAudio.removeAttribute("src");
+    failedSpeechAudioUrl = "";
     return;
   }
 
@@ -1254,8 +1257,14 @@ function renderLatestSpeech(item) {
       ? `模型：${item.ai_model}`
       : "智能回复模型未配置。";
   if (item.ai_reply && !item.ai_error) {
-    refs.speechAiAudio.src = `/api/speech/reply-audio?t=${encodeURIComponent(item.received_at || Date.now())}`;
-    refs.speechAiAudio.hidden = false;
+    const audioUrl = `/api/speech/reply-audio?t=${encodeURIComponent(item.received_at || Date.now())}`;
+    if (failedSpeechAudioUrl === audioUrl) {
+      refs.speechAiAudio.hidden = true;
+      refs.speechAiMeta.textContent = "语音生成失败，请稍后刷新重试或检查 TTS 配置。";
+    } else {
+      refs.speechAiAudio.src = audioUrl;
+      refs.speechAiAudio.hidden = false;
+    }
   } else {
     refs.speechAiAudio.hidden = true;
     refs.speechAiAudio.removeAttribute("src");
@@ -1379,7 +1388,7 @@ async function previewVoicePrompt(eventKey, button) {
   refs.voicePromptsStatus.textContent = "正在试听 " + (item.label || eventKey) + "...";
 
   try {
-    const audio = document.getElementById("voice-preview-audio");
+    const audio = refs.voicePreviewAudio;
     audio.src = "/api/voice-prompts/audio?event_key=" + encodeURIComponent(eventKey) + "&t=" + Date.now();
     audio.load();
     await audio.play();
@@ -1483,6 +1492,17 @@ async function logout() {
 refs.refreshButton.addEventListener("click", refreshAll);
 refs.logoutButton.addEventListener("click", logout);
 refs.speechUploadButton.addEventListener("click", uploadSpeechFile);
+refs.speechAiAudio.addEventListener("error", () => {
+  failedSpeechAudioUrl = refs.speechAiAudio.getAttribute("src") || "";
+  refs.speechAiAudio.hidden = true;
+  refs.speechAiMeta.textContent = "语音生成失败，请稍后刷新重试或检查 TTS 配置。";
+});
+refs.speechAiAudio.addEventListener("canplay", () => {
+  failedSpeechAudioUrl = "";
+});
+refs.voicePreviewAudio.addEventListener("error", () => {
+  refs.voicePromptsStatus.textContent = "试听失败：语音生成服务暂不可用，请检查 TTS 配置。";
+});
 refs.voicePromptsSaveButton.addEventListener("click", saveVoicePrompts);
 refs.voicePromptsList.addEventListener("click", (event) => {
   const button = event.target.closest('[data-action="preview"]');
