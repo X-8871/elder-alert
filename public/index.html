@@ -273,6 +273,32 @@
           </div>
         </article>
 
+        <!-- 新增：Agent 工具配置面板 -->
+        <article id="agent-config-panel" class="panel agent-config-panel" data-view="mode">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">Agent 配置</p>
+              <h2>互动模式工具配置</h2>
+            </div>
+            <button id="agent-config-save-button" type="button">保存配置</button>
+          </div>
+          <p class="panel-note">配置 Agent 在互动模式下可调用的工具。看护模式不使用这些工具。</p>
+          <p id="agent-config-status" class="panel-note">加载中...</p>
+
+          <div class="agent-tools-grid">
+          </div>
+
+          <div class="agent-config-note">
+            <h4>配置说明</h4>
+            <ul>
+              <li><strong>看护模式</strong>：使用预设关键词匹配，不调用这些工具</li>
+              <li><strong>互动模式</strong>：使用AI理解用户意图并调用已启用的工具</li>
+              <li><strong>confirm_alert</strong>：严格限制只能在REMIND状态下使用，ALARM和SOS必须手动按键</li>
+              <li>禁用某个工具后，互动模式下将无法调用该功能</li>
+            </ul>
+          </div>
+        </article>
+
         <article id="mode-panel" class="panel mode-panel" data-view="mode">
           <div class="panel-head">
             <div>
@@ -398,7 +424,7 @@
       </footer>
     </div>
 
-    <script src="app.js?v=20260527-1500"></script>
+    <script src="app.js?v=20260703-2035"></script>
     <audio id="voice-preview-audio" hidden></audio>
   </body>
 </html>

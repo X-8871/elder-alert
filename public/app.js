@@ -101,6 +101,8 @@ const refs = {
   voicePromptsSaveButton: document.getElementById("voice-prompts-save-button"),
   agentActiveTimers: document.getElementById("agent-active-timers"),
   agentRecentActions: document.getElementById("agent-recent-actions"),
+  agentConfigSaveButton: document.getElementById("agent-config-save-button"),
+  agentConfigStatus: document.getElementById("agent-config-status"),
 };
 
 const AUTO_REFRESH_MS = 3000;
@@ -1428,13 +1430,14 @@ async function uploadSpeechFile() {
 async function refreshAll() {
   refs.refreshButton.disabled = true;
 
-  const [serviceResult, snapshotResult, alertsResult, speechResult, voiceModeResult, agentResult] = await Promise.allSettled([
+  const [serviceResult, snapshotResult, alertsResult, speechResult, voiceModeResult, agentResult, voicePromptsResult] = await Promise.allSettled([
     loadServiceStatus(),
     loadLatestSnapshot(),
     loadAlerts(),
     loadLatestSpeech(),
     loadVoiceMode(),
     loadAgentStatus(),
+    loadVoicePrompts(),
   ]);
 
   if (serviceResult.status === "rejected") {
@@ -1459,6 +1462,10 @@ async function refreshAll() {
 
   if (voiceModeResult.status === "rejected") {
     refs.voiceModeNote.textContent = `语音模式刷新失败：${voiceModeResult.reason.message}`;
+  }
+
+  if (voicePromptsResult.status === "rejected") {
+    refs.voicePromptsStatus.textContent = `状态播报加载失败：${voicePromptsResult.reason.message}`;
   }
 
   refs.refreshButton.disabled = false;
@@ -1529,7 +1536,101 @@ refs.alertsNextButton.addEventListener("click", () => {
 
 refs.autoRefreshState.textContent = `每 ${AUTO_REFRESH_MS / 1000} 秒`;
 activateView(viewFromHash());
-requestAnimationFrame(() => window.scrollTo(0, 0));
-loadVoicePrompts();
+
+// 初始加载数据
 refreshAll();
-setInterval(refreshAll, AUTO_REFRESH_MS);
+
+// 启动自动刷新定时器
+setInterval(() => {
+  if (!document.hidden) {
+    refreshAll();
+  }
+}, AUTO_REFRESH_MS);
+
+/* ========== Agent 配置功能 ========== */
+
+// 加载 Agent 配置
+async function loadAgentConfig() {
+  try {
+    const response = await fetch('/api/agent-config');
+    if (!response.ok) {
+      throw new Error('加载配置失败');
+    }
+    const config = await response.json();
+    
+    const toolNameMap = {
+      set_reminder: '设置备忘录',
+      get_environment: '获取环境数据',
+      confirm_alert: '确认报警',
+      get_temperature: '获取温湿度',
+      get_current_time: '获取时间',
+      get_light_level: '获取光照',
+      get_air_quality: '获取空气质量',
+      show_message_on_screen: '屏幕显示消息',
+      beep_once: '蜂鸣器提示',
+      set_timer_reminder: '定时语音播报',
+      list_active_reminders: '列出活跃提醒',
+      cancel_reminder: '取消提醒',
+      get_recent_alerts: '获取最近报警',
+      get_motion_summary: '获取雷达活动'
+    };
+
+    // 动态渲染工具列表
+    const container = document.querySelector('.agent-tools-grid');
+    container.innerHTML = config.availableTools.map(t => `
+      <div class="tool-item">
+        <label>
+          <input type="checkbox" name="agent-tool" value="${t.name}" ${config.enabledTools.includes(t.name) ? 'checked' : ''}>
+          <span class="tool-name">${toolNameMap[t.name] || t.name}</span>
+        </label>
+        <p class="tool-desc">${t.description}</p>
+      </div>
+    `).join('');
+    
+    refs.agentConfigStatus.textContent = '配置已加载';
+    refs.agentConfigStatus.className = 'panel-note success';
+  } catch (error) {
+    console.error('加载 Agent 配置失败:', error);
+    refs.agentConfigStatus.textContent = '加载失败，使用默认配置';
+    refs.agentConfigStatus.className = 'panel-note error';
+  }
+}
+
+// 保存 Agent 配置
+async function saveAgentConfig() {
+  const checkboxes = document.querySelectorAll('input[name="agent-tool"]');
+  const enabledTools = Array.from(checkboxes)
+    .filter(cb => cb.checked)
+    .map(cb => cb.value);
+  
+  refs.agentConfigStatus.textContent = '保存中...';
+  refs.agentConfigStatus.className = 'panel-note';
+  refs.agentConfigSaveButton.disabled = true;
+  
+  try {
+    const response = await fetch('/api/agent-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabledTools })
+    });
+    
+    if (!response.ok) {
+      throw new Error('保存失败');
+    }
+    
+    refs.agentConfigStatus.textContent = '配置已保存';
+    refs.agentConfigStatus.className = 'panel-note success';
+  } catch (error) {
+    console.error('保存 Agent 配置失败:', error);
+    refs.agentConfigStatus.textContent = '保存失败，请重试';
+    refs.agentConfigStatus.className = 'panel-note error';
+  } finally {
+    refs.agentConfigSaveButton.disabled = false;
+  }
+}
+
+// 绑定事件监听器
+refs.agentConfigSaveButton.addEventListener('click', saveAgentConfig);
+
+// 页面加载时加载配置 - 直接调用，因为脚本在 body 底部，DOM 已经加载完成
+loadAgentConfig();
