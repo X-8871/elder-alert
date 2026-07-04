@@ -38,11 +38,13 @@ const aiReplyConfig = {
   timeoutMs: Number(process.env.ELDER_AI_TIMEOUT_MS || 12000),
 };
 const ttsConfig = {
+  provider: (process.env.ELDER_TTS_PROVIDER || "openai-compatible").trim().toLowerCase(),
   apiKey: (process.env.ELDER_TTS_API_KEY || process.env.ELDER_AI_API_KEY || "").trim(),
   baseUrl: (process.env.ELDER_TTS_BASE_URL || process.env.ELDER_AI_BASE_URL || "").trim().replace(/\/+$/, ""),
   model: (process.env.ELDER_TTS_MODEL || "").trim(),
   voice: (process.env.ELDER_TTS_VOICE || "mimo_default").trim(),
   format: (process.env.ELDER_TTS_FORMAT || "wav").trim().toLowerCase(),
+  sampleRate: Number(process.env.ELDER_TTS_SAMPLE_RATE || 16000),
   timeoutMs: Number(process.env.ELDER_TTS_TIMEOUT_MS || 20000),
 };
 const tencentAsrConfig = {
@@ -905,6 +907,21 @@ function extractTtsAudio(data) {
   return null;
 }
 
+function extractMinimaxTtsAudio(data) {
+  const providerStatus = Number(data?.base_resp?.status_code || 0);
+  if (providerStatus !== 0) {
+    const error = new Error(`MiniMax TTS API failed with status ${providerStatus}`);
+    error.statusCode = 502;
+    throw error;
+  }
+
+  const audioHex = String(data?.data?.audio || "").trim();
+  if (!audioHex || audioHex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(audioHex)) {
+    return null;
+  }
+  return Buffer.from(audioHex, "hex");
+}
+
 function describeError(error) {
   const parts = [error?.message || String(error)];
   if (error?.code) {
@@ -1183,23 +1200,47 @@ async function generateReplyAudio(text) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number.isFinite(ttsConfig.timeoutMs) ? ttsConfig.timeoutMs : 20000);
-  const payload = {
-    model: ttsConfig.model,
-    messages: [
-      {
-        role: "assistant",
-        content: cleanText,
-      },
-    ],
-    modalities: ["audio"],
-    audio: {
-      voice: ttsConfig.voice,
-      format: ttsConfig.format,
-    },
-  };
+  const isMinimax = ttsConfig.provider === "minimax";
+  const endpoint = isMinimax
+    ? `${ttsConfig.baseUrl}/t2a_v2`
+    : `${ttsConfig.baseUrl}/chat/completions`;
+  const payload = isMinimax
+    ? {
+        model: ttsConfig.model,
+        text: cleanText,
+        stream: false,
+        language_boost: "auto",
+        output_format: "hex",
+        voice_setting: {
+          voice_id: ttsConfig.voice,
+          speed: 1,
+          vol: 1,
+          pitch: 0,
+        },
+        audio_setting: {
+          sample_rate: Number.isFinite(ttsConfig.sampleRate) ? ttsConfig.sampleRate : 16000,
+          bitrate: 128000,
+          format: ttsConfig.format,
+          channel: 1,
+        },
+      }
+    : {
+        model: ttsConfig.model,
+        messages: [
+          {
+            role: "assistant",
+            content: cleanText,
+          },
+        ],
+        modalities: ["audio"],
+        audio: {
+          voice: ttsConfig.voice,
+          format: ttsConfig.format,
+        },
+      };
 
   try {
-    const response = await fetch(`${ttsConfig.baseUrl}/chat/completions`, {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${ttsConfig.apiKey}`,
@@ -1216,16 +1257,30 @@ async function generateReplyAudio(text) {
       throw error;
     }
 
-    const contentType = response.headers.get("content-type") || "";
-    let audioBuffer = Buffer.from(await response.arrayBuffer());
-    const responseText = audioBuffer.toString("utf8");
-    const looksLikeJson = /^[\s]*[\[{]/.test(responseText);
-    if (contentType.includes("application/json") || looksLikeJson) {
-      const data = JSON.parse(responseText);
-      audioBuffer = extractTtsAudio(data);
+    let audioBuffer;
+    if (isMinimax) {
+      const data = await response.json();
+      audioBuffer = extractMinimaxTtsAudio(data);
+    } else {
+      const contentType = response.headers.get("content-type") || "";
+      audioBuffer = Buffer.from(await response.arrayBuffer());
+      const responseText = audioBuffer.toString("utf8");
+      const looksLikeJson = /^[\s]*[\[{]/.test(responseText);
+      if (contentType.includes("application/json") || looksLikeJson) {
+        const data = JSON.parse(responseText);
+        audioBuffer = extractTtsAudio(data);
+      }
     }
     if (!audioBuffer || audioBuffer.length === 0) {
       const error = new Error("TTS audio was empty");
+      error.statusCode = 502;
+      throw error;
+    }
+    if (
+      ttsConfig.format === "wav" &&
+      (audioBuffer.length < 12 || audioBuffer.toString("ascii", 0, 4) !== "RIFF" || audioBuffer.toString("ascii", 8, 12) !== "WAVE")
+    ) {
+      const error = new Error("TTS response was not a valid WAV file");
       error.statusCode = 502;
       throw error;
     }
@@ -1628,6 +1683,7 @@ app.get(voicePromptAudioPath, requireDashboardOrDeviceToken, async (req, res) =>
       "Cache-Control": "no-store",
       "X-TTS-Model": ttsConfig.model,
       "X-TTS-Format": ttsConfig.format,
+      "X-TTS-Provider": ttsConfig.provider,
       "X-Voice-Prompt-Key": promptItem.event_key,
     });
     return res.status(200).send(audioBuffer);
@@ -1653,6 +1709,7 @@ app.get(speechReplyAudioPath, requireDashboardOrDeviceToken, async (req, res) =>
       "Cache-Control": "no-store",
       "X-TTS-Model": ttsConfig.model,
       "X-TTS-Format": ttsConfig.format,
+      "X-TTS-Provider": ttsConfig.provider,
     });
     return res.status(200).send(audioBuffer);
   } catch (error) {
@@ -1670,6 +1727,7 @@ app.get("/api/agent/notification-audio", requireDashboardOrDeviceToken, async (r
       "Content-Type": mimeTypeForAudioFormat(ttsConfig.format),
       "Content-Length": audioBuffer.length,
       "Cache-Control": "no-store",
+      "X-TTS-Provider": ttsConfig.provider,
     });
     return res.status(200).send(audioBuffer);
   } catch (error) {
