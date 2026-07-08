@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>居家安全看护面板</title>
+    <link rel="stylesheet" href="styles.css?v=20260708-1330" />
+  </head>
+  <body>
+    <div class="app-frame">
+      <aside class="side-nav" aria-label="页面导航">
+        <nav>
+          <a class="nav-item" href="#hero-card" data-view-link="status" aria-label="当前状态">
+            <span>状态</span>
+          </a>
+          <a class="nav-item" href="#snapshot-panel" data-view-link="detect" aria-label="实时数据">
+            <span>数据</span>
+          </a>
+          <a class="nav-item" href="#alerts-panel" data-view-link="events" aria-label="异常事件">
+            <span>事件</span>
+          </a>
+          <a class="nav-item" href="#mode-panel" data-view-link="mode" aria-label="系统模式">
+            <span>模式</span>
+          </a>
+          <a class="nav-item" href="#debug-panel" data-view-link="debug" aria-label="调试模块">
+            <span>调试</span>
+          </a>
+        </nav>
+      </aside>
+
+    <main class="page-shell">
+      <header class="topbar" aria-label="监控面板页眉">
+        <div>
+          <p class="eyebrow">ESP32-S3 独居老人风险预警终端</p>
+          <h1>居家安全看护面板</h1>
+          <p class="topbar-note">当前状态、环境指标、毫米波人体存在、设备健康与异常事件集中展示</p>
+        </div>
+        <div class="topbar-actions">
+          <div class="refresh-chip" aria-live="polite">
+            <span>自动刷新</span>
+            <strong id="auto-refresh-state">每 3 秒</strong>
+          </div>
+          <button id="refresh-button" type="button">立即刷新</button>
+          <button id="logout-button" class="logout-button" type="button">退出登录</button>
+        </div>
+      </header>
+
+      <section id="hero-card" class="status-hero state-idle view-block" data-view="status" aria-label="当前状态">
+        <div class="status-top">
+          <div class="hero-main">
+            <div class="hero-kicker">
+              <span class="section-label">当前状态</span>
+              <span id="hero-live-badge" class="live-badge">等待数据</span>
+            </div>
+            <div class="state-line">
+              <div id="hero-state-mark" class="state-mark" aria-hidden="true">等</div>
+              <div>
+                <div id="hero-state" class="hero-state">暂无数据</div>
+                <div id="hero-risk" class="hero-risk">风险等级：-</div>
+              </div>
+            </div>
+            <p id="hero-reason" class="hero-reason">等待设备上报第一帧遥测数据。</p>
+          </div>
+
+          <dl class="hero-facts">
+            <div>
+              <dt>设备编号</dt>
+              <dd id="hero-device">-</dd>
+            </div>
+            <div>
+              <dt>最近上报</dt>
+              <dd id="hero-last-seen">-</dd>
+            </div>
+            <div>
+              <dt>风险原因</dt>
+              <dd id="hero-reason-code">-</dd>
+            </div>
+          </dl>
+        </div>
+        <article class="hero-risk-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">风险检测</p>
+              <h2>当前风险解释</h2>
+            </div>
+          </div>
+          <div id="risk-summary" class="risk-summary">
+            <span class="reason-type">等待数据</span>
+            <h3>暂无风险判断</h3>
+            <p>等待设备上报当前状态、风险等级和原因。</p>
+          </div>
+          <div class="reason-stack">
+            <div>
+              <span class="section-label">当前原因</span>
+              <strong id="metric-reason">-</strong>
+            </div>
+            <div>
+              <span class="section-label">判断类型</span>
+              <strong id="risk-category">-</strong>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="data-workspace view-block" data-view="detect" aria-label="实时数据">
+        <article id="snapshot-panel" class="panel data-panel">
+          <div class="data-column telemetry-panel">
+            <div class="panel-head">
+              <div>
+                <p class="section-label">实时数据</p>
+                <h2>核心传感器指标</h2>
+              </div>
+              <span id="metric-tick" class="quiet-pill">设备运行 -</span>
+            </div>
+            <div id="snapshot-empty" class="empty">暂无设备遥测数据。</div>
+            <div id="snapshot-grid" class="metric-grid" hidden>
+              <article class="metric-card sensor-bar-card">
+                <span>环境温度</span>
+                <strong id="metric-temperature">-</strong>
+                <div class="threshold-bar" aria-hidden="true"><i id="metric-temperature-bar"></i><em>警戒值</em></div>
+                <small id="metric-temperature-threshold">高温提醒 >= 32°C 持续 5 分钟</small>
+              </article>
+              <article class="metric-card sensor-bar-card">
+                <span>环境湿度</span>
+                <strong id="metric-humidity">-</strong>
+                <div class="threshold-bar" aria-hidden="true"><i id="metric-humidity-bar"></i><em>遥测参考</em></div>
+                <small id="metric-humidity-threshold">当前仅遥测展示，不单独触发风险</small>
+              </article>
+              <article class="metric-card sensor-bar-card">
+                <span>光照强度</span>
+                <strong id="metric-lux">-</strong>
+                <div class="threshold-bar" aria-hidden="true"><i id="metric-lux-bar"></i><em>低光警戒</em></div>
+                <small id="metric-lux-threshold">休息场景 <= 20 lx；亮光退出 >= 50 lx</small>
+              </article>
+              <article class="metric-card sensor-bar-card">
+                <span>烟雾浓度</span>
+                <strong id="metric-mq2">-</strong>
+                <div class="threshold-bar" aria-hidden="true"><i id="metric-mq2-bar"></i><em>警戒值</em></div>
+                <small id="metric-mq2-threshold">提醒 >= 1200；告警 >= 1500</small>
+              </article>
+              <article class="metric-card metric-card-context">
+                <span>场景提醒</span>
+                <strong id="metric-light-scene">-</strong>
+                <small id="metric-light-scene-note">根据当前光照判断白天活动或夜晚睡眠场景</small>
+              </article>
+              <article class="metric-card metric-card-compact">
+                <span>毫米波存在</span>
+                <strong id="metric-mmwave">-</strong>
+                <small>毫米波人体存在</small>
+              </article>
+              <article class="metric-card metric-card-compact">
+                <span>毫米波距离</span>
+                <strong id="metric-mmwave-distance">-</strong>
+                <small>目标距离 / 能量</small>
+              </article>
+              <article id="metric-state-card" class="metric-card metric-card-state">
+                <span>状态 / 风险</span>
+                <strong id="metric-state">-</strong>
+                <small>状态机输出</small>
+              </article>
+            </div>
+            <div class="mini-chart-panel" aria-label="当前指标小图表">
+              <div class="mini-chart-head">
+                <span>当前指标概览</span>
+                <strong id="mini-chart-note">等待设备数据</strong>
+              </div>
+              <div class="soft-bars">
+                <div class="soft-bar-row">
+                  <span>温度</span>
+                  <i><b id="chart-temp"></b></i>
+                  <strong id="chart-temp-value">-</strong>
+                </div>
+                <div class="soft-bar-row">
+                  <span>湿度</span>
+                  <i><b id="chart-humidity"></b></i>
+                  <strong id="chart-humidity-value">-</strong>
+                </div>
+                <div class="soft-bar-row">
+                  <span>光照</span>
+                  <i><b id="chart-lux"></b></i>
+                  <strong id="chart-lux-value">-</strong>
+                </div>
+                <div class="soft-bar-row">
+                  <span>烟雾</span>
+                  <i><b id="chart-mq2"></b></i>
+                  <strong id="chart-mq2-value">-</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="data-column mmwave-panel" data-view="detect">
+            <div class="panel-head">
+              <div>
+                <p class="section-label">毫米波检测</p>
+                <h2>LD2410B 人体存在检测</h2>
+              </div>
+              <span id="mmwave-health" class="quiet-pill">未上报</span>
+            </div>
+            <div class="detail-grid">
+              <div><span>人体状态</span><strong id="mmwave-body-state">-</strong></div>
+              <div><span>融合策略</span><strong id="mmwave-fusion">-</strong></div>
+              <div><span>运动目标</span><strong id="mmwave-moving">-</strong></div>
+              <div><span>静止目标</span><strong id="mmwave-stationary">-</strong></div>
+              <div><span>综合距离</span><strong id="mmwave-detect-distance">-</strong></div>
+              <div><span>运动能量</span><strong id="mmwave-moving-energy">-</strong></div>
+              <div><span>静止能量</span><strong id="mmwave-stationary-energy">-</strong></div>
+              <div><span>能力边界</span><strong id="mmwave-boundary">增强存在/静止判断，不宣称精准跌倒检测</strong></div>
+            </div>
+          </div>
+
+          <aside id="health-panel" class="data-column health-panel" data-view="detect">
+            <div class="panel-head">
+              <div>
+                <p class="section-label">设备健康</p>
+                <h2>传感器在线状态</h2>
+              </div>
+              <span id="health-summary" class="quiet-pill">未上报</span>
+            </div>
+            <div id="health-grid" class="health-grid"></div>
+          </aside>
+        </article>
+      </section>
+
+      <section id="lower-grid" class="lower-grid view-block" data-view="mixed" aria-label="异常事件和系统状态">
+        <article id="alerts-panel" class="panel events-panel" data-view="events">
+          <div class="panel-head panel-head-wide">
+            <div>
+              <p class="section-label">异常事件</p>
+              <h2>最近异常事件</h2>
+              <p id="alerts-page-info" class="panel-note">按最新事件优先显示</p>
+            </div>
+            <label class="filter-inline" for="alerts-state-filter">
+              <span>状态筛选</span>
+              <select id="alerts-state-filter">
+                <option value="ALL">全部</option>
+                <option value="REMIND">提醒</option>
+                <option value="ALARM">告警</option>
+                <option value="SOS">主动求助</option>
+              </select>
+            </label>
+          </div>
+          <div id="empty-state" class="empty">暂无异常事件。</div>
+          <div id="alerts-list" class="alerts-list" hidden></div>
+          <div id="alerts-pagination" class="pagination-bar" hidden>
+            <button id="alerts-prev-button" type="button">上一页</button>
+            <span id="alerts-pagination-info">第 1 / 1 页</span>
+            <button id="alerts-next-button" type="button">下一页</button>
+          </div>
+        </article>
+
+        
+        <article id="agent-panel" class="panel agent-panel" data-view="mode">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">智能管家</p>
+              <h2>Agent 活动状态</h2>
+            </div>
+            <span id="agent-voice-mode-badge" class="quiet-pill">--</span>
+          </div>
+          <div class="detail-grid agent-grid">
+            <div>
+              <span class="section-label">活跃定时器 (Active Timers)</span>
+              <ul id="agent-active-timers" class="agent-timers-list">
+                <li>加载中...</li>
+              </ul>
+            </div>
+            <div>
+              <span class="section-label">最近操作 (Recent Actions)</span>
+              <ul id="agent-recent-actions" class="agent-actions-list">
+                <li>加载中...</li>
+              </ul>
+            </div>
+          </div>
+          <div style="margin-top:16px;">
+            <span class="section-label">Agent 工具箱（14 项能力）</span>
+            <div id="agent-tools-grid" class="agent-tools-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-top:8px;">
+              <span class="quiet-pill">加载中...</span>
+            </div>
+          </div>
+          <div style="margin-top:16px;">
+            <span class="section-label">患者信息（注入 AI 提示词）</span>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
+              <input id="patient-name" type="text" placeholder="患者称呼（如：王爷爷）" maxlength="50" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);">
+              <input id="patient-address" type="text" placeholder="怎么称呼他（如：老王、王师傅）" maxlength="20" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);">
+            </div>
+            <textarea id="patient-conditions" placeholder="健康状况/疾病（如：高血压、糖尿病、轻度耳背）" maxlength="500" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);margin-top:8px;resize:vertical;"></textarea>
+            <textarea id="patient-notes" placeholder="注意事项（如：按时吃药、饮食清淡、避免剧烈运动）" maxlength="500" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);margin-top:8px;resize:vertical;"></textarea>
+            <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+              <button id="patient-save-btn" class="btn btn-primary" style="padding:6px 16px;">保存患者信息</button>
+              <span id="patient-save-status" class="quiet-pill"></span>
+            </div>
+          </div>
+        </article>
+
+        <article id="mode-panel" class="panel mode-panel" data-view="mode">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">模式与服务</p>
+              <h2>运行模式与系统状态</h2>
+            </div>
+            <span id="mode-current" class="quiet-pill">未上报</span>
+          </div>
+          <div class="mode-switch-card" aria-label="运行模式切换">
+            <div>
+              <span class="section-label">模式偏好</span>
+              <strong id="mode-preference-label">跟随设备</strong>
+            </div>
+            <div class="mode-switch-options" role="group" aria-label="运行模式">
+              <button type="button" data-run-mode="DEMO">演示模式</button>
+              <button type="button" data-run-mode="REAL">真实模式</button>
+              <button type="button" data-run-mode="">跟随设备</button>
+            </div>
+            <p id="mode-effective-note" class="mode-note">生效模式以设备上报为准。切换后指令将在下次遥测时下发到设备。</p>
+          </div>
+            <div class="detail-grid mode-grid">
+              <div><span>当前模式</span><strong id="mode-current-detail">-</strong></div>
+              <div><span>无活动提醒阈值</span><strong id="mode-no-motion">-</strong></div>
+              <div><span>演示确认超时</span><strong id="mode-demo-timeout">15 秒</strong></div>
+              <div><span>真实确认超时</span><strong id="mode-real-timeout">5 分钟</strong></div>
+            </div>
+          <p class="mode-note">当前 15 秒升级用于比赛演示；真实居家运行建议使用分钟级确认时间，并需按现场需求确认。</p>
+          <div class="detail-grid threshold-detail-grid">
+            <div><span>高温提醒</span><strong id="mode-threshold-temperature">-</strong></div>
+            <div><span>休息场景光照</span><strong id="mode-threshold-lux">-</strong></div>
+            <div><span>MQ2 提醒 / 告警</span><strong id="mode-threshold-mq2">-</strong></div>
+            <div><span>升级与恢复</span><strong id="mode-threshold-escalation">-</strong></div>
+          </div>
+          <dl class="system-list merged-system-list">
+            <div>
+              <dt>云端服务</dt>
+              <dd id="service-state" class="status-pill">检查中...</dd>
+            </div>
+            <div>
+              <dt>最近接收</dt>
+              <dd id="service-last-received">-</dd>
+            </div>
+            <div>
+              <dt>距现在</dt>
+              <dd id="service-age">-</dd>
+            </div>
+            <div>
+              <dt>异常事件数</dt>
+              <dd id="service-count">-</dd>
+            </div>
+            <div class="system-list-wide">
+              <dt>接口</dt>
+              <dd id="endpoint-box" class="endpoint-text">加载中...</dd>
+            </div>
+          </dl>
+          <details class="payload-details">
+            <summary>最近原始数据</summary>
+            <pre id="raw-payload-box">等待数据...</pre>
+          </details>
+        </article>
+
+        <article id="notification-panel" class="panel notification-panel" data-view="mode">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">邮件通知</p>
+              <h2>SOS 邮件报警配置</h2>
+            </div>
+            <span id="notification-status" class="quiet-pill">加载中...</span>
+          </div>
+          <div class="notification-config-card">
+            <div class="notification-toggle">
+              <label class="filter-inline" for="notification-enabled">
+                <span>启用邮件通知</span>
+                <select id="notification-enabled">
+                  <option value="true">启用</option>
+                  <option value="false">关闭</option>
+                </select>
+              </label>
+              <label class="filter-inline" for="notification-threshold">
+                <span>通知阈值</span>
+                <select id="notification-threshold">
+                  <option value="SOS">仅 SOS</option>
+                  <option value="ALARM_SOS">ALARM + SOS</option>
+                  <option value="REMIND_ALARM_SOS">REMIND + ALARM + SOS</option>
+                </select>
+              </label>
+            </div>
+            <div class="notification-recipients">
+              <label for="notification-recipients">
+                <span class="section-label">收件人邮箱</span>
+                <small>多个邮箱用分号或逗号分隔；留空则使用服务器默认收件人</small>
+              </label>
+              <textarea id="notification-recipients" rows="2" placeholder="例如：family@example.com; neighbor@example.com"></textarea>
+            </div>
+            <div class="notification-templates">
+              <div>
+                <label for="notification-subject">
+                  <span class="section-label">邮件主题模板</span>
+                  <small>可用变量：{{state}} {{device_id}} {{time}} {{reason}}</small>
+                </label>
+                <input id="notification-subject" type="text" placeholder="[{{state}}] 设备 {{device_id}} 触发紧急通知" />
+              </div>
+              <div>
+                <label for="notification-body">
+                  <span class="section-label">邮件正文模板</span>
+                  <small>可用变量：{{state}} {{device_id}} {{time}} {{reason}} {{dashboard_url}}</small>
+                </label>
+                <textarea id="notification-body" rows="4" placeholder="独居老人守护终端检测到 {{state}} 状态。&#10;设备：{{device_id}}&#10;时间：{{time}}&#10;原因：{{reason}}"></textarea>
+              </div>
+            </div>
+            <div class="notification-actions">
+              <button id="notification-save-button" type="button">保存配置</button>
+              <button id="notification-test-button" type="button" class="secondary-button">发送测试邮件</button>
+            </div>
+            <p id="notification-message" class="panel-note"></p>
+          </div>
+        </article>
+
+        <article id="debug-panel" class="panel speech-panel" data-view="debug">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">调试模块</p>
+              <h2>语音调试</h2>
+            </div>
+            <span id="speech-asr-state" class="quiet-pill">检查中</span>
+          </div>
+          <div class="voice-mode-card" aria-label="语音助手模式">
+            <div>
+              <span class="section-label">语音助手模式</span>
+              <strong id="voice-mode-title">看护模式</strong>
+            </div>
+            <div class="voice-mode-options" role="group" aria-label="语音助手模式">
+              <button type="button" data-voice-mode="CARE">看护</button>
+              <button type="button" data-voice-mode="INTERACT">互动</button>
+            </div>
+            <p id="voice-mode-note">看护模式会优先回答安全提醒和风险解释。</p>
+          </div>
+          <div class="speech-upload">
+            <label class="file-picker" for="speech-file-input">
+              <span>音频文件</span>
+              <input id="speech-file-input" type="file" accept="audio/*,.wav,.mp3,.m4a,.pcm,.ogg" />
+            </label>
+            <button id="speech-upload-button" type="button">上传并识别</button>
+          </div>
+          <div class="speech-result">
+            <span class="section-label">最近识别结果</span>
+            <strong id="speech-result-text">暂无语音识别结果。</strong>
+            <p id="speech-result-meta">上传短音频可测试云端语音识别。</p>
+            <div class="speech-ai">
+              <span class="section-label">智能回复</span>
+              <strong id="speech-ai-reply">暂无智能回复。</strong>
+              <p id="speech-ai-meta">配置云端模型后生成简短语音回复。</p>
+              <audio id="speech-ai-audio" controls preload="none" hidden></audio>
+            </div>
+          </div>
+          <div class="voice-prompts-card" aria-label="状态播报配置">
+            <div class="panel-head">
+              <div>
+                <span class="section-label">状态播报</span>
+                <h3>云端状态播报配置</h3>
+              </div>
+              <button id="voice-prompts-save-button" type="button">保存播报配置</button>
+            </div>
+            <p id="voice-prompts-status" class="panel-note">加载中...</p>
+            <div id="voice-prompts-list" class="voice-prompts-list"></div>
+          </div>
+        </article>
+      </section>
+      </main>
+      <footer class="site-footer" aria-label="备案信息">
+      <div class="site-footer-links">
+        <span>ESP32-S3 独居老人风险预警终端</span>
+        <span>居家安全看护面板</span>
+        <span>项目展示</span>
+      </div>
+      <div class="site-footer-record">
+        <span>版权所有：居家安全看护面板</span>
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">皖ICP备2026013632号-1</a>
+      </div>
+      </footer>
+    </div>
+
+    <script src="app.js?v=20260708-1400"></script>
+    <audio id="voice-preview-audio" hidden></audio>
+  </body>
+</html>

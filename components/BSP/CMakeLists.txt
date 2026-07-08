@@ -1,0 +1,29 @@
+set(src_dirs 
+        
+                I2C
+                KEY
+                AHT20
+                BH1750
+                MQ2
+                LD2410B
+                INMP441
+                MAX98357A
+                Alert
+                OLED
+                TFT)
+set(include_dirs 
+
+                I2C
+                KEY
+                AHT20
+                BH1750
+                MQ2
+                LD2410B
+                INMP441
+                MAX98357A
+                Alert
+                OLED
+                TFT)
+set(requires driver esp_driver_i2s esp_adc i2cdev aht bh1750 esp_lcd)
+
+idf_component_register(SRC_DIRS ${src_dirs} INCLUDE_DIRS ${include_dirs} REQUIRES ${requires})

@@ -1,0 +1,22 @@
+## IDF 组件管理器清单文件
+dependencies:
+  ## 所需 IDF 版本
+  idf:
+    version: '>=4.1.0'
+  # # 在这里填写依赖组件列表
+  # # Espressif 维护的组件示例：
+  # component: "~1.0.0"
+  # # 第三方组件示例：
+  # username/component: ">=1.0.0,<2.0.0"
+  # username2/component2:
+  #   version: "~1.0.0"
+  #   # 对传递依赖可以设置 `public` 标志。
+  #   # `public` 标志不会影响 `main` 组件自身的依赖。
+  #   # `main` 的所有依赖默认都是 public。
+  #   public: true
+
+  espressif/led_strip: ^3.0.0
+  esp-idf-lib/aht: ^1.0.8
+  esp-idf-lib/bh1750: ^1.1.7
+  espressif/esp_rainmaker: ^1.12.4
+  lvgl/lvgl: ^9.1.0

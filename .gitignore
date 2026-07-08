@@ -1,0 +1,31 @@
+# ESP-IDF build artifacts
+build/
+managed_components/
+*.bin
+*.elf
+*.map
+
+# Node modules (server-side)
+node_modules/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Environment secrets
+.env
+.env.local
+login.json
+login_local.json
+cookies.txt
+cookies_local.txt
+
+# Backup files
+*.backup*
+*.bak-*
+
+# Scratch / temp
+scratch/
