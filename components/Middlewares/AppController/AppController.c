@@ -37,7 +37,6 @@ typedef enum {
     ALARM_CAUSE_MQ2_LIGHT_TIMEOUT,
     ALARM_CAUSE_MQ2_HARD,
     ALARM_CAUSE_MQ2_TEMP_RISE,
-    ALARM_CAUSE_FALL_DETECTED,
 } alarm_cause_t;
 
 typedef struct {
@@ -64,17 +63,6 @@ static uint16_t s_last_distance_cm = 0;
 static distance_event_t s_distance_events[DISTANCE_EVENT_MAX] = {0};
 static uint8_t s_distance_event_index = 0;
 static const char *s_pending_voice_prompt_key = NULL;
-static bool s_remote_confirm_pending = false;  /* Agent 远程确认标志 */
-
-/* ---- 跌倒检测状态机 ---- */
-typedef enum {
-    FALL_STATE_IDLE = 0,      /* 无跌倒 */
-    FALL_STATE_PENDING,       /* 距离骤降，等待静止确认 */
-    FALL_STATE_CONFIRMED,     /* 跌倒已确认 */
-} fall_state_t;
-static fall_state_t s_fall_state = FALL_STATE_IDLE;
-static uint32_t s_fall_pending_since_ms = 0;
-static uint32_t s_fall_clear_activity_since_ms = 0;
 
 static uint32_t now_ms(void)
 {
@@ -83,79 +71,72 @@ static uint32_t now_ms(void)
 
 static uint32_t get_remind_confirm_timeout_ms(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_REAL
                : APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_DEMO;
 }
 
 static uint32_t get_high_temp_cooldown_ms(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_HIGH_TEMP_COOLDOWN_MS_REAL
                : APP_CONTROLLER_HIGH_TEMP_COOLDOWN_MS_DEMO;
 }
 
 static uint32_t get_mq2_alarm_cooldown_ms(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_MQ2_ALARM_COOLDOWN_MS_REAL
                : APP_CONTROLLER_MQ2_ALARM_COOLDOWN_MS_DEMO;
 }
 
 static uint16_t get_rest_enter_lux(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_REST_ENTER_LUX_REAL
                : APP_CONTROLLER_REST_ENTER_LUX_DEMO;
 }
 
 static uint16_t get_rest_exit_lux(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_REST_EXIT_LUX_REAL
                : APP_CONTROLLER_REST_EXIT_LUX_DEMO;
 }
 
 static uint32_t get_rest_enter_ms(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_REST_ENTER_MS_REAL
                : APP_CONTROLLER_REST_ENTER_MS_DEMO;
 }
 
 static uint32_t get_distance_change_window_ms(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_DISTANCE_CHANGE_WINDOW_MS_REAL
                : APP_CONTROLLER_DISTANCE_CHANGE_WINDOW_MS_DEMO;
 }
 
 static uint8_t get_distance_change_count_threshold(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_DISTANCE_CHANGE_COUNT_REAL
                : APP_CONTROLLER_DISTANCE_CHANGE_COUNT_DEMO;
 }
 
 static uint32_t get_low_light_activity_window_ms(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_LOW_LIGHT_ACTIVITY_WINDOW_MS_REAL
                : APP_CONTROLLER_LOW_LIGHT_ACTIVITY_WINDOW_MS_DEMO;
 }
 
 static uint16_t get_low_light_activity_sum_cm(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return APP_CONTROLLER_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_LOW_LIGHT_ACTIVITY_SUM_CM_REAL
                : APP_CONTROLLER_LOW_LIGHT_ACTIVITY_SUM_CM_DEMO;
-}
-
-static uint32_t get_fall_confirm_ms(void)
-{
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
-               ? APP_CONTROLLER_FALL_CONFIRM_MS_REAL
-               : APP_CONTROLLER_FALL_CONFIRM_MS_DEMO;
 }
 
 static esp_err_t apply_state(app_state_t next_state)
@@ -400,83 +381,6 @@ static bool mq2_alarm_cooldown_active(uint32_t current_ms)
            current_ms < s_mq2_alarm_cooldown_until_ms;
 }
 
-/* ---- 跌倒检测：基于 LD2410B 距离骤降 + 持续静止 ---- */
-static void evaluate_fall_detection(const sensor_hub_data_t *sensor_data, uint32_t current_ms)
-{
-    if (sensor_data == NULL || !sensor_data->ld2410b_ok) {
-        s_fall_state = FALL_STATE_IDLE;
-        s_fall_clear_activity_since_ms = 0;
-        return;
-    }
-
-    /* 无人在场 → 重置跌倒状态 */
-    if (!sensor_data->ld2410b_presence) {
-        if (s_fall_state != FALL_STATE_IDLE) {
-            ESP_LOGI(TAG, "fall_reset: no person present");
-        }
-        s_fall_state = FALL_STATE_IDLE;
-        s_fall_clear_activity_since_ms = 0;
-        return;
-    }
-
-    uint16_t distance_cm = 0;
-    bool has_distance = get_person_distance_cm(sensor_data, &distance_cm);
-    bool is_moving = sensor_data->ld2410b_moving_target;
-    bool is_stationary_only = sensor_data->ld2410b_stationary_target &&
-                              !sensor_data->ld2410b_moving_target;
-
-    switch (s_fall_state) {
-    case FALL_STATE_IDLE:
-        /* 检测距离骤降 + 转为静止 → 可能跌倒 */
-        if (has_distance && s_last_distance_valid) {
-            int delta = (int)distance_cm - (int)s_last_distance_cm;
-            uint16_t abs_delta = (uint16_t)(delta < 0 ? -delta : delta);
-            if (abs_delta >= APP_CONTROLLER_FALL_DROP_THRESHOLD_CM && is_stationary_only) {
-                s_fall_state = FALL_STATE_PENDING;
-                s_fall_pending_since_ms = current_ms;
-                ESP_LOGW(TAG, "fall_pending: distance %u->%u (delta=%u), stationary",
-                         (unsigned)s_last_distance_cm, (unsigned)distance_cm,
-                         (unsigned)abs_delta);
-            }
-        }
-        break;
-
-    case FALL_STATE_PENDING:
-        /* 持续静止超过确认时间 → 确认跌倒 */
-        if (is_moving) {
-            s_fall_state = FALL_STATE_IDLE;
-            ESP_LOGI(TAG, "fall_pending_cancelled: person moving again");
-        } else if (is_stationary_only &&
-                   (current_ms - s_fall_pending_since_ms) >= get_fall_confirm_ms()) {
-            s_fall_state = FALL_STATE_CONFIRMED;
-            ESP_LOGW(TAG, "fall_confirmed: stationary for %" PRIu32 "ms",
-                     current_ms - s_fall_pending_since_ms);
-        }
-        break;
-
-    case FALL_STATE_CONFIRMED:
-        /* 持续活动超过阈值 → 清除跌倒标记 */
-        if (is_moving) {
-            if (s_fall_clear_activity_since_ms == 0) {
-                s_fall_clear_activity_since_ms = current_ms;
-            } else if ((current_ms - s_fall_clear_activity_since_ms) >=
-                       APP_CONTROLLER_FALL_CLEAR_ACTIVITY_MS) {
-                s_fall_state = FALL_STATE_IDLE;
-                s_fall_clear_activity_since_ms = 0;
-                ESP_LOGI(TAG, "fall_cleared: person active for %ums",
-                         (unsigned)APP_CONTROLLER_FALL_CLEAR_ACTIVITY_MS);
-            }
-        } else {
-            s_fall_clear_activity_since_ms = 0;
-        }
-        break;
-
-    default:
-        s_fall_state = FALL_STATE_IDLE;
-        break;
-    }
-}
-
 const char *AppController_StateToString(app_state_t state)
 {
     switch (state) {
@@ -514,9 +418,6 @@ esp_err_t AppController_Init(void)
     }
     s_distance_event_index = 0;
     s_pending_voice_prompt_key = NULL;
-    s_fall_state = FALL_STATE_IDLE;
-    s_fall_pending_since_ms = 0;
-    s_fall_clear_activity_since_ms = 0;
     s_initialized = true;
 
     ESP_LOGI(TAG, "state_init: %s", AppController_StateToString(s_current_state));
@@ -533,7 +434,6 @@ esp_err_t AppController_UpdateContext(const sensor_hub_data_t *sensor_data)
     }
 
     uint32_t current_ms = now_ms();
-    evaluate_fall_detection(sensor_data, current_ms);
     bool distance_event = update_distance_tracking(sensor_data, current_ms);
     bool obvious_activity = (sensor_data->ld2410b_ok && sensor_data->ld2410b_moving_target) ||
                             distance_event;
@@ -572,16 +472,12 @@ esp_err_t AppController_Process(const sensor_hub_data_t *sensor_data, const risk
     }
 
     if (s_current_state == APP_STATE_ALARM) {
-        if (risk_result->fall_detected) {
-            s_alarm_cause = ALARM_CAUSE_FALL_DETECTED;
-        } else if (risk_result->mq2_temp_rise_alarm) {
+        if (risk_result->mq2_temp_rise_alarm) {
             s_alarm_cause = ALARM_CAUSE_MQ2_TEMP_RISE;
         } else if (risk_result->mq2_high_alarm) {
             s_alarm_cause = ALARM_CAUSE_MQ2_HARD;
         }
-        if ((s_alarm_cause == ALARM_CAUSE_FALL_DETECTED &&
-             !risk_result->fall_detected) ||
-            (s_alarm_cause == ALARM_CAUSE_MQ2_HARD &&
+        if ((s_alarm_cause == ALARM_CAUSE_MQ2_HARD &&
              risk_result->mq2_clear_stable &&
              !risk_result->mq2_high_alarm &&
              !risk_result->mq2_temp_rise_alarm) ||
@@ -620,12 +516,6 @@ esp_err_t AppController_Process(const sensor_hub_data_t *sensor_data, const risk
     if (risk_result->mq2_high_alarm) {
         s_alarm_cause = ALARM_CAUSE_MQ2_HARD;
         return apply_state_with_voice_prompt(APP_STATE_ALARM, "mq2_danger_alarm");
-    }
-
-    /* 跌倒检测：距离骤降 + 持续静止 → 直接进入 ALARM */
-    if (risk_result->fall_detected) {
-        s_alarm_cause = ALARM_CAUSE_FALL_DETECTED;
-        return apply_state_with_voice_prompt(APP_STATE_ALARM, "fall_detected_alarm");
     }
 
     if (s_current_state == APP_STATE_REMIND) {
@@ -671,19 +561,12 @@ esp_err_t AppController_Service(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-bool confirm_pressed = false;
-bool sos_pressed = false;
-esp_err_t ret = InputController_GetConfirmEvent(&confirm_pressed);
-if (ret != ESP_OK) {
-return ret;
-}
-
-/* Agent 远程确认：等效按下确认键 */
-if (s_remote_confirm_pending) {
-confirm_pressed = true;
-s_remote_confirm_pending = false;
-ESP_LOGI(TAG, "remote_confirm consumed");
-}
+    bool confirm_pressed = false;
+    bool sos_pressed = false;
+    esp_err_t ret = InputController_GetConfirmEvent(&confirm_pressed);
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
     ret = InputController_GetSosEvent(&sos_pressed);
     if (ret != ESP_OK) {
@@ -734,12 +617,6 @@ ESP_LOGI(TAG, "remote_confirm consumed");
                 ret = apply_state_with_voice_prompt(APP_STATE_NORMAL, "user_confirm_normal");
                 ESP_LOGI(TAG, "mq2_light_alarm_cleared_by_user cooldown_ms=%" PRIu32,
                          get_mq2_alarm_cooldown_ms());
-            } else if (s_alarm_cause == ALARM_CAUSE_FALL_DETECTED) {
-                s_fall_state = FALL_STATE_IDLE;
-                s_remind_timeout_latched = false;
-                s_last_motion_tick = xTaskGetTickCount();
-                ret = apply_state_with_voice_prompt(APP_STATE_NORMAL, "user_confirm_normal");
-                ESP_LOGI(TAG, "fall_alarm_cleared_by_user");
             } else {
                 ret = AlertController_Confirm();
                 ESP_LOGI(TAG, "hard_alarm_acknowledged_without_state_clear");
@@ -785,9 +662,7 @@ ESP_LOGI(TAG, "remote_confirm consumed");
         }
     }
 
-    /* AlertController_Update() 已由 main.c 中的 alert_blink_task 独立任务驱动，
-     * 不再在此处调用，避免两个任务同时操作 GPIO 产生竞争。 */
-    return ESP_OK;
+    return AlertController_Update();
 }
 
 app_state_t AppController_GetState(void)
@@ -820,11 +695,6 @@ bool AppController_IsRestContextActive(void)
     return s_rest_context_active;
 }
 
-bool AppController_IsFallDetected(void)
-{
-    return s_fall_state == FALL_STATE_CONFIRMED;
-}
-
 uint32_t AppController_GetSosTriggerCount(void)
 {
     return s_sos_trigger_count;
@@ -832,19 +702,7 @@ uint32_t AppController_GetSosTriggerCount(void)
 
 const char *AppController_TakePendingVoicePromptKey(void)
 {
-const char *key = s_pending_voice_prompt_key;
-s_pending_voice_prompt_key = NULL;
-return key;
-}
-
-void AppController_RemoteConfirm(void)
-{
-s_remote_confirm_pending = true;
-ESP_LOGI(TAG, "remote_confirm requested");
-}
-
-void AppController_SetRunMode(risk_run_mode_t mode)
-{
-    ESP_LOGI(TAG, "set_run_mode requested: %s", mode == RISK_RUN_MODE_REAL ? "REAL" : "DEMO");
-    RiskEngine_SetRunMode(mode);
+    const char *key = s_pending_voice_prompt_key;
+    s_pending_voice_prompt_key = NULL;
+    return key;
 }

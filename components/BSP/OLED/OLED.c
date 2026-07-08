@@ -2,7 +2,24 @@
  * @file OLED.c
  * @brief SSD1306 128×64 OLED 显示驱动实现——I2C 通信，内置 5×7 ASCII 字模。
  *
- * 基于 ESP-IDF esp_lcd 框架操作 SSD1306 面板。
+ * 【学弟必读：字模数据是怎么来的？】
+ * 下面 s_glyphs[] 数组定义了每个字符对应的 7×5 像素点阵。
+ * 例如字符 'A' 的 7 行数据（二进制）：
+ *   0x04 = 0 0 1 0 0     →     ██
+ *   0x0A = 0 1 0 1 0     →    █ █
+ *   0x11 = 1 0 0 0 1     →   █   █
+ *   0x11 = 1 0 0 0 1     →   █   █
+ *   0x1F = 1 1 1 1 1     →   █████
+ *   0x11 = 1 0 0 0 1     →   █   █
+ *   0x11 = 1 0 0 0 1     →   █   █
+ * 每字节的高 5 bit 有效（因为字宽是 5 列），低 3 bit 被忽略。
+ *
+ * 当前字模表覆盖：数字 0-9、大写 A-Z、空格 % - . / :
+ * 不支持小写字母和中文（那是 TFT+LVGL 的活）。
+ *
+ * 【esp_lcd 框架】
+ * ESP-IDF 提供了统一的 esp_lcd 框架来操作各种 LCD/OLED 面板。
+ * 使用 spi_lcd 框架的好处是不需要自己写 SSD1306 的初始化序列和命令。
  */
 
 #include "BSP_OLED.h"
@@ -12,10 +29,10 @@
 
 #include "BSP_I2C.h"
 #include "i2cdev.h"
-#include "esp_lcd_io_i2c.h"
-#include "esp_lcd_panel_io.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_ssd1306.h"
+#include "esp_lcd_io_i2c.h"          /* I2C 接口的 LCD IO */
+#include "esp_lcd_panel_io.h"        /* LCD 面板 IO 抽象 */
+#include "esp_lcd_panel_ops.h"       /* LCD 面板操作（reset/init/display on） */
+#include "esp_lcd_panel_ssd1306.h"   /* SSD1306 专用面板驱动 */
 #include "esp_log.h"
 
 #define BSP_OLED_I2C_ADDRESS 0x3C   /* SSD1306 默认 I2C 地址 */

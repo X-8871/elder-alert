@@ -1,21 +1,26 @@
 /**
  * @file BSP_I2C.c
- * @brief 共享 I2C 总线管理实现——全局单例模式，底层委托给 i2cdev 组件。
+ * @brief 共享 I2C 总线管理实现——全局单例模式，底层委托给 i2cdev 组件完成实际的寄存器操作。
+ *
+ * 【学弟必读：什么是"单例模式"？】
+ * 整个系统中只需要一条 I2C 总线（连接 AHT20/BH1750/OLED 等），
+ * 所以这里的静态变量（s_initialized / s_port / ...）全局只保存一份配置，
+ * 保证不会被重复初始化出两条不同的 I2C 总线。
  */
 
 #include "BSP_I2C.h"
 
-#include "i2cdev.h"
-#include "esp_log.h"
+#include "i2cdev.h"     /* 第三方 i2cdev 库——封装了 ESP-IDF I2C 驱动的更友好接口 */
+#include "esp_log.h"    /* ESP-IDF 日志宏：ESP_LOGI / ESP_LOGW / ESP_LOGE */
 
-static const char *TAG = "BSP_I2C";
-static bool s_initialized = false;
+static const char *TAG = "BSP_I2C";  /* 日志标签，串口输出时会显示在每行前面 */
+static bool s_initialized = false;    /* 是否已完成初始化 */
 
 /* ---- 保存当前共享 I2C 总线的唯一配置 ---- */
-static i2c_port_t s_port = I2C_NUM_MAX;
-static gpio_num_t s_sda_io_num = GPIO_NUM_NC;
-static gpio_num_t s_scl_io_num = GPIO_NUM_NC;
-static uint32_t s_clk_speed_hz = 0;
+static i2c_port_t s_port = I2C_NUM_MAX;       /* I2C 控制器编号 (0 或 1) */
+static gpio_num_t s_sda_io_num = GPIO_NUM_NC; /* SDA 数据引脚 */
+static gpio_num_t s_scl_io_num = GPIO_NUM_NC; /* SCL 时钟引脚 */
+static uint32_t s_clk_speed_hz = 0;            /* 总线时钟频率 */
 
 esp_err_t BSP_I2C_Init(i2c_port_t port, gpio_num_t sda_io_num, gpio_num_t scl_io_num, uint32_t clk_speed_hz)
 {

@@ -2,10 +2,21 @@
  * @file SpeechReplyPlayer.h
  * @brief 从云端下载 TTS 生成的 WAV 音频，通过 MAX98357A 播放出来。
  *
- * AppController 输出 event_key → 拼接 URL → HTTP GET 下载 WAV → 解析 WAV 头
- * → 初始化 MAX98357A → I2S 写入 PCM → 播放前后各加 80ms 静音缓冲减少 POP 杂音。
+ * 【学弟必读：这个模块解决什么问题？】
+ * 当系统状态发生变化（例如进入 REMIND、进入 ALARM），
+ * AppController 会输出一个 event_key（例如 "no_motion_remind"）。
+ * SpeechReplyPlayer 负责：
+ *   1. 拼出完整 URL → GET /api/voice-prompts/audio?event_key=no_motion_remind
+ *   2. 从云端下载 TTS 生成的 WAV 音频文件（HTTP GET，带重试）
+ *   3. 解析 WAV 头（获取采样率、声道数等参数）
+ *   4. 初始化 MAX98357A 功放
+ *   5. 把 PCM 数据写入 I2S TX 通道 → 喇叭发声
+ *   6. 播放前后各加 80ms 静音缓冲（减少 I2S 启动/停止时的 POP 杂音）
  *
- * 只支持 16-bit 单声道 PCM WAV，最多重试 3 次，下载失败时由 main.c 回退到 VoicePrompt。
+ * 【硬性约束】
+ * - 只支持 16-bit 单声道 PCM WAV（当前云端 MiMo TTS 的输出格式）
+ * - 最多重试 3 次，每次间隔 1 秒
+ * - 下载失败时由 main.c 回退到 VoicePrompt 本地固定人声
  */
 
 #pragma once

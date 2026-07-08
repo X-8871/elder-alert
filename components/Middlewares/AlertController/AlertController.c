@@ -9,9 +9,6 @@
 #include "AlertController.h"
 
 #include "esp_log.h"
-#include "driver/gpio.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 #include "BSP_Alert.h"
 
@@ -19,11 +16,6 @@ static const char *TAG = "AlertController";
 static bool s_initialized = false;
 /* 用户在 ALARM 状态按确认键后，只静音本地声光，不改变系统风险状态。 */
 static bool s_alarm_muted = false;
-
-/* Agent beep_once 支持：非阻塞短蜂鸣 */
-static bool s_beep_pending = false;
-static TickType_t s_beep_until_tick = 0;
-#define ALERT_CONTROLLER_BEEP_MS 200U
 
 esp_err_t AlertController_Init(void)
 {
@@ -75,32 +67,10 @@ esp_err_t AlertController_Confirm(void)
     return BSP_Alert_SetMode(BSP_ALERT_MODE_NORMAL);
 }
 
-esp_err_t AlertController_BeepOnce(void)
-{
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    s_beep_pending = true;
-    s_beep_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(ALERT_CONTROLLER_BEEP_MS);
-    ESP_LOGI(TAG, "beep_once requested");
-    return ESP_OK;
-}
-
 esp_err_t AlertController_Update(void)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
-    }
-
-    /* Agent beep_once 优先：蜂鸣器强制开启，跳过正常闪烁逻辑 */
-    if (s_beep_pending) {
-        if (xTaskGetTickCount() < s_beep_until_tick) {
-            /* 直接拉低蜂鸣器引脚（低电平有效），保持 LED 当前状态 */
-            gpio_set_level(ALERT_CONTROLLER_BUZZER_GPIO, 0);
-            return ESP_OK;
-        }
-        s_beep_pending = false;
-        /* 蜂鸣时间结束，落入正常 Update 恢复正确输出 */
     }
 
     return BSP_Alert_Update();

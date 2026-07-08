@@ -23,15 +23,6 @@ typedef struct {
     uint32_t sample_rate_hz;
 } speech_uploader_config_t;
 
-/** 录音上传过程阶段，用于驱动不依赖音频数据的界面反馈。 */
-typedef enum {
-    SPEECH_UPLOADER_PHASE_RECORDING = 0,
-    SPEECH_UPLOADER_PHASE_UPLOADING,
-} speech_uploader_phase_t;
-
-typedef void (*speech_uploader_phase_callback_t)(speech_uploader_phase_t phase, void *user_ctx);
-
 esp_err_t SpeechUploader_Init(const speech_uploader_config_t *config);
 esp_err_t SpeechUploader_Deinit(void);
-void SpeechUploader_SetPhaseCallback(speech_uploader_phase_callback_t callback, void *user_ctx);
 esp_err_t SpeechUploader_RecordWavAndUpload(uint32_t record_ms);

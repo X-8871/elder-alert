@@ -99,19 +99,8 @@ const refs = {
   voicePromptsStatus: document.getElementById("voice-prompts-status"),
   voicePromptsList: document.getElementById("voice-prompts-list"),
   voicePromptsSaveButton: document.getElementById("voice-prompts-save-button"),
-agentActiveTimers: document.getElementById("agent-active-timers"),
-agentRecentActions: document.getElementById("agent-recent-actions"),
-agentToolsGrid: document.getElementById("agent-tools-grid"),
-agentVoiceModeBadge: document.getElementById("agent-voice-mode-badge"),
-notificationStatus: document.getElementById("notification-status"),
-notificationEnabled: document.getElementById("notification-enabled"),
-notificationThreshold: document.getElementById("notification-threshold"),
-notificationRecipients: document.getElementById("notification-recipients"),
-notificationSubject: document.getElementById("notification-subject"),
-notificationBody: document.getElementById("notification-body"),
-notificationSaveButton: document.getElementById("notification-save-button"),
-notificationTestButton: document.getElementById("notification-test-button"),
-notificationMessage: document.getElementById("notification-message"),
+  agentActiveTimers: document.getElementById("agent-active-timers"),
+  agentRecentActions: document.getElementById("agent-recent-actions"),
 };
 
 const AUTO_REFRESH_MS = 3000;
@@ -142,7 +131,7 @@ const RULE_PROFILES = {
     modeLabel: "演示模式",
     noMotionRemindMs: 30 * 1000,
     remindEscalationMs: 15 * 1000,
-    temperatureHighC: 28,
+    temperatureHighC: 30,
     temperatureDurationText: "持续 30 秒",
     temperatureCooldownText: "OK 后冷却 1 分钟",
     enterRestLux: 30,
@@ -178,7 +167,6 @@ let currentAlertStateFilter = "ALL";
 let currentView = "";
 let voicePromptItems = [];
 let serviceStatus = null;
-let patientContextDirty = false;
 const VIEW_BY_HASH = {
   "#hero-card": "status",
   "#snapshot-panel": "detect",
@@ -987,23 +975,21 @@ function renderHealthPanel(item) {
 
 function renderModePanel(item, serviceStatus) {
   const mode = formatValue(item?.run_mode);
+  const profile = getRuleProfile(mode);
   const modeText = mode === "REAL" ? "真实模式" : mode === "DEMO" ? "演示模式" : "未上报";
   refs.modeCurrent.textContent = modeText;
   refs.modeCurrent.className = `quiet-pill ${mode === "REAL" ? "state-normal" : mode === "DEMO" ? "state-remind" : "state-idle"}`;
   refs.modeCurrentDetail.textContent = modeText;
 
-  let effMode = mode || "DEMO";
   if (serviceStatus) {
     const pref = serviceStatus.preferredRunMode;
     const eff = serviceStatus.effectiveRunMode;
-    effMode = eff || mode || "DEMO";
     refs.modePreferenceLabel.textContent =
       pref ? (pref === "REAL" ? "真实模式" : "演示模式") : "跟随设备";
     refs.modeEffectiveNote.textContent =
-      `当前生效：${eff === "REAL" ? "真实模式" : "演示模式"}（${pref ? "服务器偏好" : "设备上报"}）。切换后指令将在下次遥测时下发到设备。`;
+      `当前生效：${eff === "REAL" ? "真实模式" : "演示模式"}（${pref ? "服务器偏好" : "设备上报"}）。切换到真实模式后需重启设备或等待固件轮询。`;
     highlightModeButton(pref);
   }
-  const profile = getRuleProfile(effMode);
   refs.modeNoMotion.textContent = formatMs(item?.no_motion_remind_ms ?? profile.noMotionRemindMs);
   refs.modeDemoTimeout.textContent = formatMs(item?.remind_confirm_timeout_demo_ms ?? 15000);
   refs.modeRealTimeout.textContent = formatMs(item?.remind_confirm_timeout_real_ms ?? 300000);
@@ -1050,7 +1036,7 @@ async function setRunMode(mode) {
         ? data.preferredRunMode === "REAL" ? "真实模式" : "演示模式"
         : "跟随设备";
     refs.modeEffectiveNote.textContent =
-      `当前生效：${data.effectiveRunMode === "REAL" ? "真实模式" : "演示模式"}（${data.preferredRunMode ? "服务器偏好" : "设备上报"}）。切换后指令将在下次遥测时下发到设备。`;
+      `当前生效：${data.effectiveRunMode === "REAL" ? "真实模式" : "演示模式"}（${data.preferredRunMode ? "服务器偏好" : "设备上报"}）。切换到真实模式后需重启设备或等待固件轮询。`;
     highlightModeButton(data.preferredRunMode || "");
   } catch (error) {
     refs.modeEffectiveNote.textContent = `模式切换失败：${error.message}`;
@@ -1168,43 +1154,26 @@ function renderServiceStatus(data) {
 }
 
 function renderAgentStatus(data) {
-if (!data) return;
+  if (!data) return;
+  
+  if (data.activeTimers && data.activeTimers.length > 0) {
+    refs.agentActiveTimers.innerHTML = data.activeTimers.map(t => {
+      const remainingMs = t.expiresAt - Date.now();
+      const mins = Math.max(0, Math.ceil(remainingMs / 60000));
+      return `<li><strong>${t.type}</strong> - ${mins} 分钟后触发 (${t.description})</li>`;
+    }).join("");
+  } else {
+    refs.agentActiveTimers.innerHTML = `<li><span class="quiet-pill">当前无活跃定时器</span></li>`;
+  }
 
-if (data.activeTimers && data.activeTimers.length > 0) {
-refs.agentActiveTimers.innerHTML = data.activeTimers.map(t => {
-const remainingMs = t.expiresAt - Date.now();
-const mins = Math.max(0, Math.ceil(remainingMs / 60000));
-return `<li><strong>${t.type}</strong> - ${mins} 分钟后触发 (${t.description})</li>`;
-}).join("");
-} else {
-refs.agentActiveTimers.innerHTML = `<li><span class="quiet-pill">当前无活跃定时器</span></li>`;
-}
-
-if (data.recentActions && data.recentActions.length > 0) {
-refs.agentRecentActions.innerHTML = data.recentActions.map(a => {
-const time = new Date(a.time).toLocaleTimeString();
-return `<li><span class="quiet-pill">${time}</span> <strong>${a.tool}</strong>: ${JSON.stringify(a.args)}</li>`;
-}).join("");
-} else {
-refs.agentRecentActions.innerHTML = `<li><span class="quiet-pill">暂无操作记录</span></li>`;
-}
-
-if (data.currentVoiceMode && refs.agentVoiceModeBadge) {
-const modeLabel = data.currentVoiceMode === "INTERACT" ? "互动模式" : data.currentVoiceMode === "OFFLINE" ? "离线模式" : "看护模式";
-refs.agentVoiceModeBadge.textContent = modeLabel;
-refs.agentVoiceModeBadge.className = `quiet-pill ${data.currentVoiceMode === "INTERACT" ? "state-normal" : ""}`;
-}
-
-if (data.availableTools && refs.agentToolsGrid) {
-refs.agentToolsGrid.innerHTML = data.availableTools.map(t => {
-return `<div style="padding:8px 10px;border:1px solid var(--border,#e0e0e0);border-radius:8px;background:var(--surface,#f8f9fa);">` +
-`<div style="font-size:1.3em;">${t.icon}</div>` +
-`<div style="font-weight:600;font-size:0.85rem;margin-top:2px;">${t.label}</div>` +
-`<div style="font-size:0.75rem;color:var(--text-muted,#888);margin-top:2px;">${t.desc}</div>` +
-`<div style="font-size:0.7rem;color:var(--text-muted,#aaa);margin-top:4px;">${t.hardware}</div>` +
-`</div>`;
-}).join("");
-}
+  if (data.recentActions && data.recentActions.length > 0) {
+    refs.agentRecentActions.innerHTML = data.recentActions.map(a => {
+      const time = new Date(a.time).toLocaleTimeString();
+      return `<li><span class="quiet-pill">${time}</span> <strong>${a.tool}</strong>: ${JSON.stringify(a.args)}</li>`;
+    }).join("");
+  } else {
+    refs.agentRecentActions.innerHTML = `<li><span class="quiet-pill">暂无操作记录</span></li>`;
+  }
 }
 
 async function loadAgentStatus() {
@@ -1212,39 +1181,6 @@ async function loadAgentStatus() {
   if (!response.ok) return;
   const data = await response.json();
   renderAgentStatus(data);
-  if (data.patientContext) {
-    const setVal = (id, val) => {
-      const el = document.getElementById(id);
-      if (el && !patientContextDirty) el.value = val || "";
-    };
-    setVal("patient-name", data.patientContext.name);
-    setVal("patient-address", data.patientContext.address);
-    setVal("patient-conditions", data.patientContext.conditions);
-    setVal("patient-notes", data.patientContext.notes);
-  }
-}
-
-async function savePatientContext() {
-  const ctx = {
-    name: (document.getElementById("patient-name")?.value || "").trim(),
-    address: (document.getElementById("patient-address")?.value || "").trim(),
-    conditions: (document.getElementById("patient-conditions")?.value || "").trim(),
-    notes: (document.getElementById("patient-notes")?.value || "").trim(),
-  };
-  const statusEl = document.getElementById("patient-save-status");
-  if (statusEl) statusEl.textContent = "保存中...";
-  try {
-    const resp = await fetch("/api/patient-context", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(ctx),
-    });
-    if (!resp.ok) throw new Error("保存失败");
-    if (statusEl) { statusEl.textContent = "已保存"; setTimeout(() => { statusEl.textContent = ""; }, 3000); }
-    patientContextDirty = false;
-  } catch (e) {
-    if (statusEl) statusEl.textContent = "保存失败: " + e.message;
-  }
 }
 
 async function loadServiceStatus() {
@@ -1537,11 +1473,11 @@ async function logout() {
   }
 }
 
-refs.refreshButton?.addEventListener("click", refreshAll);
-refs.logoutButton?.addEventListener("click", logout);
-refs.speechUploadButton?.addEventListener("click", uploadSpeechFile);
-refs.voicePromptsSaveButton?.addEventListener("click", saveVoicePrompts);
-refs.voicePromptsList?.addEventListener("click", (event) => {
+refs.refreshButton.addEventListener("click", refreshAll);
+refs.logoutButton.addEventListener("click", logout);
+refs.speechUploadButton.addEventListener("click", uploadSpeechFile);
+refs.voicePromptsSaveButton.addEventListener("click", saveVoicePrompts);
+refs.voicePromptsList.addEventListener("click", (event) => {
   const button = event.target.closest('[data-action="preview"]');
   if (!button) {
     return;
@@ -1566,19 +1502,19 @@ window.addEventListener("hashchange", () => {
   activateView(viewFromHash());
   window.scrollTo({ top: 0, behavior: "smooth" });
 });
-refs.alertsStateFilter?.addEventListener("change", (event) => {
+refs.alertsStateFilter.addEventListener("change", (event) => {
   currentAlertStateFilter = event.target.value;
   currentAlertsPage = 1;
   renderAlerts(latestAlerts);
 });
-refs.alertsPrevButton?.addEventListener("click", () => {
+refs.alertsPrevButton.addEventListener("click", () => {
   if (currentAlertsPage <= 1) {
     return;
   }
   currentAlertsPage -= 1;
   renderAlerts(latestAlerts);
 });
-refs.alertsNextButton?.addEventListener("click", () => {
+refs.alertsNextButton.addEventListener("click", () => {
   const filteredCount =
     currentAlertStateFilter === "ALL"
       ? latestAlerts.length
@@ -1591,103 +1527,9 @@ refs.alertsNextButton?.addEventListener("click", () => {
   renderAlerts(latestAlerts);
 });
 
-// ---- 通知配置 ----
-async function loadNotificationConfig() {
-  try {
-    const res = await fetch("/api/notification/config", { cache: "no-store" });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
-    const data = await res.json();
-    if (!data.ok || !data.config) {
-      throw new Error("配置加载失败");
-    }
-    const cfg = data.config;
-    if (refs.notificationEnabled) refs.notificationEnabled.value = cfg.enabled ? "true" : "false";
-    if (refs.notificationThreshold) refs.notificationThreshold.value = cfg.threshold || "SOS";
-    if (refs.notificationRecipients) refs.notificationRecipients.value = cfg.recipients || "";
-    if (refs.notificationSubject) refs.notificationSubject.value = cfg.subjectTemplate || "";
-    if (refs.notificationBody) refs.notificationBody.value = cfg.bodyTemplate || "";
-    if (refs.notificationStatus) {
-      const recipientCount = cfg.recipients ? cfg.recipients.split(/[;,]/).filter(s => s.trim()).length : 0;
-      const effectiveCount = recipientCount > 0 ? recipientCount : (cfg.defaultRecipients || []).length;
-      refs.notificationStatus.textContent = cfg.enabled
-        ? `已启用 | ${effectiveCount} 个收件人 | ${cfg.threshold}`
-        : "已关闭";
-    }
-    if (refs.notificationMessage) refs.notificationMessage.textContent = "";
-  } catch (error) {
-    if (refs.notificationStatus) refs.notificationStatus.textContent = "加载失败";
-    if (refs.notificationMessage) refs.notificationMessage.textContent = `通知配置加载失败：${error.message}`;
-  }
-}
-
-async function saveNotificationConfig() {
-  if (refs.notificationSaveButton) refs.notificationSaveButton.disabled = true;
-  if (refs.notificationMessage) refs.notificationMessage.textContent = "保存中...";
-  try {
-    const body = {
-      enabled: refs.notificationEnabled?.value === "true",
-      recipients: refs.notificationRecipients?.value || "",
-      threshold: refs.notificationThreshold?.value || "SOS",
-      subjectTemplate: refs.notificationSubject?.value || "",
-      bodyTemplate: refs.notificationBody?.value || "",
-    };
-    const res = await fetch("/api/notification/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      throw new Error(data.message || `HTTP ${res.status}`);
-    }
-    const cfg = data.config;
-    if (refs.notificationRecipients) refs.notificationRecipients.value = cfg.recipients || "";
-    if (refs.notificationSubject) refs.notificationSubject.value = cfg.subjectTemplate || "";
-    if (refs.notificationBody) refs.notificationBody.value = cfg.bodyTemplate || "";
-    if (refs.notificationStatus) {
-      const recipientCount = cfg.recipients ? cfg.recipients.split(/[;,]/).filter(s => s.trim()).length : 0;
-      refs.notificationStatus.textContent = cfg.enabled
-        ? `已启用 | ${recipientCount} 个收件人 | ${cfg.threshold}`
-        : "已关闭";
-    }
-    if (refs.notificationMessage) refs.notificationMessage.textContent = "配置已保存。";
-  } catch (error) {
-    if (refs.notificationMessage) refs.notificationMessage.textContent = `保存失败：${error.message}`;
-  } finally {
-    if (refs.notificationSaveButton) refs.notificationSaveButton.disabled = false;
-  }
-}
-
-async function sendTestEmail() {
-  if (refs.notificationTestButton) refs.notificationTestButton.disabled = true;
-  if (refs.notificationMessage) refs.notificationMessage.textContent = "正在发送测试邮件...";
-  try {
-    const res = await fetch("/api/notification/test", { method: "POST" });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      throw new Error(data.message || `HTTP ${res.status}`);
-    }
-    if (refs.notificationMessage) refs.notificationMessage.textContent = data.message || "测试邮件已发送。";
-  } catch (error) {
-    if (refs.notificationMessage) refs.notificationMessage.textContent = `测试邮件发送失败：${error.message}`;
-  } finally {
-    if (refs.notificationTestButton) refs.notificationTestButton.disabled = false;
-  }
-}
-
-refs.notificationSaveButton?.addEventListener("click", saveNotificationConfig);
-refs.notificationTestButton?.addEventListener("click", sendTestEmail);
-document.getElementById("patient-save-btn")?.addEventListener("click", savePatientContext);
-["patient-name", "patient-address", "patient-conditions", "patient-notes"].forEach(id => {
-  document.getElementById(id)?.addEventListener("input", () => { patientContextDirty = true; });
-});
-
 refs.autoRefreshState.textContent = `每 ${AUTO_REFRESH_MS / 1000} 秒`;
 activateView(viewFromHash());
 requestAnimationFrame(() => window.scrollTo(0, 0));
 loadVoicePrompts();
-loadNotificationConfig();
 refreshAll();
 setInterval(refreshAll, AUTO_REFRESH_MS);

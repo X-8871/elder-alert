@@ -1,4 +1,11 @@
 # ESP-IDF 工程顶层 CMake 文件
+#
+# 【学弟必读】
+# - ESP-IDF 使用 CMake 作为构建系统
+# - idf_component.yml 声明第三方依赖（如 LVGL、RainMaker）
+# - components/ 下是本项目的自有代码（BSP + Middlewares）
+# - managed_components/ 是 idf.py 自动拉取的第三方库，不要手动修改
+#
 
 # 以下 5 行是 ESP-IDF 工程的固定模板，顺序不要调整
 cmake_minimum_required(VERSION 3.16)

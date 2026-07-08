@@ -2,12 +2,42 @@
  * @file DisplayController.c
  * @brief 显示控制器——用 LVGL 库在 ST7735 TFT 上渲染系统界面。
  *
- * 使用 DMA 双缓冲：一个缓冲区 DMA 传输到 TFT 时，LVGL 在另一个缓冲区绘制下一帧。
- * flush 回调链：tft_flush_cb → esp_lcd_panel_draw_bitmap → SPI DMA → tft_flush_done → lv_display_flush_ready。
+ * 【学弟必读：LVGL 是什么？】
+ * LVGL (Light and Versatile Graphics Library) 是一个开源的嵌入式图形库。
+ * 它提供按钮、标签、布局等 UI 控件，类似于网页前端开发中的 HTML/CSS。
+ *
+ * 【LVGL 基本概念】
+ * - display：代表一块物理屏幕
+ * - screen：一个"页面"，上面可以有多个控件
+ * - object/widget：具体的 UI 控件（标签、按钮等）
+ * - flush_cb：LVGL 需要画图时调用的回调——我们在这里把像素数据发给 TFT
+ * - tick：LVGL 的内部时钟，需要周期性推进（lv_tick_inc + lv_timer_handler）
+ *
+ * 【本项目 LVGL 界面布局】
+ * ┌──────────────────────────────┐
+ * │  顶栏 (22px): 时间 | Wi-Fi   │ ← s_top_bar
+ * ├──────────────────────────────┤
+ * │                              │
+ * │    主状态大字 (NORMAL/       │ ← s_state_label
+ * │    REMIND/ALARM/SOS/OFFLINE) │
+ * │                              │
+ * ├──────────────────────────────┤  离线时这里显示 "OFFLINE MODE"
+ * │   分隔线                      │ ← s_divider
+ * ├──────────────┬───────────────┤
+ * │  [Confirm]   │    [SOS]      │ ← s_bottom_panel + s_confirm_button + s_sos_button
+ * └──────────────┴───────────────┘
+ *
+ * 【DMA 双缓冲机制】
+ * LVGL 使用两个缓冲区交替工作：
+ * 一个在 DMA 传输到 TFT 的同时，LVGL 在另一个里绘制下一帧。
+ * 这就是 s_buf1 和 s_buf2 的作用。
+ *
+ * 【flush 回调链】
+ * tft_flush_cb() → esp_lcd_panel_draw_bitmap() → SPI DMA 传输
+ *   → 传完 → tft_flush_done() → lv_display_flush_ready() 通知 LVGL
  */
 
 #include "DisplayController.h"
-#include "ui.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -15,117 +45,72 @@
 
 #include "BSP_TFT.h"
 #include "WiFiManager.h"
-#include "esp_heap_caps.h"
+#include "esp_heap_caps.h"   /* DMA 内存分配需要特殊堆 */
 #include "esp_log.h"
-#include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
-#include "freertos/task.h"
 #include "lvgl.h"
 
 static const char *TAG = "DisplayController";
 
-#define LVGL_DMA_ALIGNMENT_BYTES  4
-#define LVGL_TICK_PERIOD_MS       2
-#define LVGL_TASK_STACK_SIZE      6144
-#define LVGL_TASK_PRIORITY        4
-#define LVGL_TASK_MIN_DELAY_MS    5
-#define LVGL_TASK_MAX_DELAY_MS    20
-#define LVGL_LOCK_TIMEOUT_MS      100
+/* ---- UI 布局常量（像素）---- */
+#define UI_TOP_BAR_HEIGHT           22    /* 顶栏高度 */
+#define UI_TOP_BAR_PAD_HOR          6     /* 顶栏水平内边距 */
+#define UI_TOP_BAR_PAD_VER          2     /* 顶栏垂直内边距 */
+#define UI_TIME_LABEL_WIDTH         52    /* 时间标签宽度 */
+#define UI_WIFI_SLASH_SIZE          14    /* Wi-Fi 斜线图标尺寸 */
+#define UI_OFFLINE_BANNER_Y         22    /* 离线横幅 Y 位置 */
+#define UI_TEXT_WIDTH               148   /* 文本控件宽度 */
+#define UI_STATE_TEXT_WIDTH         148   /* 状态文字宽度 */
+#define UI_STATUS_AREA_HEIGHT       70    /* 中间状态区高度 */
+#define UI_STATE_LABEL_OFFSET_Y     -4    /* 状态文字微调偏移 */
+#define UI_BOTTOM_PANEL_HEIGHT      38    /* 底部按钮面板高度 */
+#define UI_BOTTOM_PANEL_Y (BSP_TFT_GetHeight() - UI_BOTTOM_PANEL_HEIGHT)  /* 底部面板 Y */
+#define UI_DIVIDER_HEIGHT           2     /* 分隔线高度 */
+#define UI_BUTTON_WIDTH             64    /* 按钮宽度 */
+#define UI_BUTTON_HEIGHT            26    /* 按钮高度 */
+#define UI_BUTTON_BOTTOM_MARGIN     6     /* 按钮距底部距离 */
+#define UI_BUTTON_SIDE_MARGIN       10    /* 按钮距左右边距 */
+#define UI_BUTTON_RADIUS            8     /* 按钮圆角半径 */
+#define UI_BUTTON_PAD               4     /* 按钮内边距 */
 
 static bool s_enabled = false;
 static lv_display_t *s_display = NULL;
 static void *s_buf1 = NULL;   /* DMA 双缓冲第一块 */
 static void *s_buf2 = NULL;   /* DMA 双缓冲第二块 */
-static app_state_t s_current_state = APP_STATE_NORMAL;
-static SemaphoreHandle_t s_lvgl_mutex = NULL;
-static esp_timer_handle_t s_lvgl_tick_timer = NULL;
-static TaskHandle_t s_lvgl_task_handle = NULL;
 
-/* 缓存最新传感器数据，供独立显示任务在状态变化时刷新界面 */
-static sensor_hub_data_t s_last_sensor_data = {0};
-static bool s_has_sensor_data = false;
+/* ---- LVGL 控件句柄 ---- */
+static lv_obj_t *s_screen = NULL;
+static lv_obj_t *s_top_bar = NULL;
+static lv_obj_t *s_time_label = NULL;
+static lv_obj_t *s_network_label = NULL;
+static lv_obj_t *s_network_slash_line = NULL;  /* Wi-Fi 图标上的黑色斜线（离线时显示） */
+static lv_obj_t *s_offline_banner = NULL;
+static lv_obj_t *s_status_area = NULL;
+static lv_obj_t *s_state_label = NULL;         /* 主状态大字 */
+static lv_obj_t *s_divider = NULL;
+static lv_obj_t *s_bottom_panel = NULL;
+static lv_obj_t *s_confirm_button = NULL;
+static lv_obj_t *s_sos_button = NULL;
+static lv_obj_t *s_confirm_label = NULL;
+static lv_obj_t *s_sos_label = NULL;
 
-static bool lvgl_lock(TickType_t timeout_ticks)
-{
-    return s_lvgl_mutex != NULL
-        && xSemaphoreTakeRecursive(s_lvgl_mutex, timeout_ticks) == pdTRUE;
-}
+/* Wi-Fi 离线斜线的两个端点坐标（从左上→右下） */
+static const lv_point_precise_t s_wifi_slash_points[] = {
+    {1, 12},
+    {12, 1},
+};
 
-static void lvgl_unlock(void)
-{
-    xSemaphoreGiveRecursive(s_lvgl_mutex);
-}
-
-/** 前向声明：lvgl_task 在 build_time_text 定义之前使用。 */
-static void build_time_text(char *buffer, size_t buffer_size);
-
-/** ESP 定时器仅推进 LVGL tick，不访问任何控件。 */
-static void lvgl_tick_timer_cb(void *arg)
-{
-    (void)arg;
-    lv_tick_inc(LVGL_TICK_PERIOD_MS);
-}
-
-/** 独立刷新任务保证主循环录音或播放期间动画仍能持续运行。
- *  同时检测 AppController 状态变化（如按键导致 SOS→NORMAL），
- *  在主循环阻塞时仍能立即更新屏幕显示。 */
-static void lvgl_task(void *arg)
-{
-    (void)arg;
-    TickType_t previous_tick = xTaskGetTickCount();
-
-    for (;;) {
-        uint32_t delay_ms = LVGL_TASK_MAX_DELAY_MS;
-        if (lvgl_lock(portMAX_DELAY)) {
-            const TickType_t current_tick = xTaskGetTickCount();
-            uint32_t elapsed_ms = (uint32_t)((current_tick - previous_tick) * portTICK_PERIOD_MS);
-            previous_tick = current_tick;
-            if (elapsed_ms == 0) {
-                elapsed_ms = LVGL_TASK_MIN_DELAY_MS;
-            }
-
-            /* 检测 AppController 状态是否已变化（如按键触发 SOS/确认），
-             * 若变化则立即用缓存的传感器数据刷新界面，不等待主循环 2s 周期。 */
-            const app_state_t live_state = AppController_GetState();
-            if (live_state != s_current_state && s_has_sensor_data) {
-                char time_text[8] = "--:--";
-                build_time_text(time_text, sizeof(time_text));
-                const bool online = WiFiManager_IsConnected();
-
-                char sensor_text[64] = "--.- C";
-                if (s_last_sensor_data.aht20_ok) {
-                    snprintf(sensor_text, sizeof(sensor_text), "%.1f C", s_last_sensor_data.aht_temperature);
-                }
-
-                const app_state_t previous_state = s_current_state;
-                s_current_state = live_state;
-                ui_update(live_state, online, time_text, sensor_text);
-                if (previous_state != APP_STATE_NORMAL && live_state == APP_STATE_NORMAL) {
-                    ui_set_activity(DISPLAY_ACTIVITY_CONFIRMED);
-                }
-                ESP_LOGI(TAG, "display refreshed by lvgl_task: %s -> %s",
-                         AppController_StateToString(previous_state),
-                         AppController_StateToString(live_state));
-            }
-
-            ui_service_animations(s_current_state, elapsed_ms);
-            delay_ms = lv_timer_handler();
-            lvgl_unlock();
-        }
-
-        if (delay_ms < LVGL_TASK_MIN_DELAY_MS) delay_ms = LVGL_TASK_MIN_DELAY_MS;
-        if (delay_ms > LVGL_TASK_MAX_DELAY_MS) delay_ms = LVGL_TASK_MAX_DELAY_MS;
-        vTaskDelay(pdMS_TO_TICKS(delay_ms));
-    }
-}
+/** 状态到颜色/文字的映射 */
+typedef struct {
+    const char *state_text;
+    lv_color_t bg_color;
+} display_state_style_t;
 
 /* ================================================================
  * LVGL 回调函数——连接 LVGL 和 TFT 驱动的桥梁
  * ================================================================ */
 
 /**
- * @brief DMA 颜色传输完成回调。
+ * @brief DMA 颜色传输完成回调——LVGL 收到这个通知后才知道"可以画下一帧了"。
  */
 static bool tft_flush_done(esp_lcd_panel_io_handle_t panel_io,
                            esp_lcd_panel_io_event_data_t *edata,
@@ -139,8 +124,9 @@ static bool tft_flush_done(esp_lcd_panel_io_handle_t panel_io,
 }
 
 /**
- * @brief LVGL flush 回调，将像素数据发送到 TFT。
- *        包含字节序交换（lv_draw_sw_rgb565_swap）。
+ * @brief LVGL flush 回调——LVGL 画好一块区域后，调用这个函数把像素发给 TFT。
+ *        这里做了一次字节序交换（lv_draw_sw_rgb565_swap），
+ *        因为 LVGL 的 RGB565 字节序和 ST7735 期望的可能不一致。
  */
 static void tft_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *px_map)
 {
@@ -154,6 +140,30 @@ static void tft_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *
     int32_t height = area->y2 - area->y1 + 1;
     lv_draw_sw_rgb565_swap(px_map, (uint32_t)(width * height));
     esp_lcd_panel_draw_bitmap(panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
+}
+
+/* ================================================================
+ * UI 构建辅助函数
+ * ================================================================ */
+
+static const lv_font_t *ui_font(void) { return LV_FONT_DEFAULT; }
+static const lv_font_t *ui_state_font(void) { return &lv_font_montserrat_20; }
+
+/** 获取状态对应的文字和背景色 */
+static display_state_style_t display_state_style(app_state_t state)
+{
+    switch (state) {
+    case APP_STATE_NORMAL:
+        return (display_state_style_t){ .state_text = "NORMAL", .bg_color = lv_color_hex(0x1E9E55) };  /* 绿色 */
+    case APP_STATE_REMIND:
+        return (display_state_style_t){ .state_text = "REMIND", .bg_color = lv_color_hex(0xE58A1F) };  /* 橙色 */
+    case APP_STATE_ALARM:
+        return (display_state_style_t){ .state_text = "ALARM", .bg_color = lv_color_hex(0xD64633) };   /* 红色 */
+    case APP_STATE_SOS:
+        return (display_state_style_t){ .state_text = "SOS", .bg_color = lv_color_hex(0xA61E22) };     /* 深红 */
+    default:
+        return (display_state_style_t){ .state_text = "UNKNOWN", .bg_color = lv_color_hex(0x5E5E5E) }; /* 灰色 */
+    }
 }
 
 /** 构造时间字符串（HH:MM），未同步时显示 "--:--" */
@@ -180,6 +190,194 @@ static void build_time_text(char *buffer, size_t buffer_size)
     strftime(buffer, buffer_size, "%H:%M", &local_tm);
 }
 
+/** 给按钮设置圆角+背景色+无边框的统一样式 */
+static void style_button_box(lv_obj_t *obj, lv_color_t bg_color)
+{
+    lv_obj_set_style_radius(obj, UI_BUTTON_RADIUS, 0);
+    lv_obj_set_style_border_width(obj, 0, 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(obj, bg_color, 0);
+    lv_obj_set_style_pad_all(obj, UI_BUTTON_PAD, 0);
+}
+
+/** 创建一个居中标签——复用代码，避免每个标签写一遍 */
+static lv_obj_t *create_center_label(lv_obj_t *parent, uint16_t width,
+                                     lv_color_t text_color, lv_align_t align, int32_t y_offset)
+{
+    lv_obj_t *label = lv_label_create(parent);
+    if (label == NULL) return NULL;
+
+    lv_obj_set_width(label, width);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(label, ui_font(), 0);
+    lv_obj_set_style_text_color(label, text_color, 0);
+    lv_obj_align(label, align, 0, y_offset);
+    return label;
+}
+
+static lv_obj_t *create_button_label(lv_obj_t *button, const char *text)
+{
+    lv_obj_t *label = lv_label_create(button);
+    if (label == NULL) return NULL;
+
+    lv_obj_set_style_text_font(label, ui_font(), 0);
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_label_set_text(label, text);
+    lv_obj_center(label);
+    return label;
+}
+
+/* ---- 逐块构建 UI 树 ---- */
+
+static esp_err_t create_top_bar(void)
+{
+    s_top_bar = lv_obj_create(s_screen);
+    if (s_top_bar == NULL) return ESP_ERR_NO_MEM;
+
+    lv_obj_remove_style_all(s_top_bar);
+    lv_obj_set_size(s_top_bar, BSP_TFT_GetWidth(), UI_TOP_BAR_HEIGHT);
+    lv_obj_align(s_top_bar, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_opa(s_top_bar, LV_OPA_90, 0);
+    lv_obj_set_style_bg_color(s_top_bar, lv_color_white(), 0);
+    lv_obj_set_style_pad_hor(s_top_bar, UI_TOP_BAR_PAD_HOR, 0);
+    lv_obj_set_style_pad_ver(s_top_bar, UI_TOP_BAR_PAD_VER, 0);
+
+    s_time_label = lv_label_create(s_top_bar);
+    if (s_time_label == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_set_width(s_time_label, UI_TIME_LABEL_WIDTH);
+    lv_label_set_long_mode(s_time_label, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_align(s_time_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_font(s_time_label, ui_font(), 0);
+    lv_obj_set_style_text_color(s_time_label, lv_color_hex(0x1E1E1E), 0);
+    lv_obj_align(s_time_label, LV_ALIGN_LEFT_MID, 0, 0);
+
+    s_network_label = lv_label_create(s_top_bar);
+    if (s_network_label == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_set_style_text_font(s_network_label, ui_font(), 0);
+    lv_obj_set_style_text_color(s_network_label, lv_color_hex(0x1E1E1E), 0);
+    lv_obj_align(s_network_label, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_label_set_text(s_network_label, LV_SYMBOL_WIFI);  /* LVGL 内置 Wi-Fi 图标 */
+
+    /* 离线斜线：叠加在 Wi-Fi 图标上，默认隐藏 */
+    s_network_slash_line = lv_line_create(s_top_bar);
+    if (s_network_slash_line == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_set_size(s_network_slash_line, UI_WIFI_SLASH_SIZE, UI_WIFI_SLASH_SIZE);
+    lv_line_set_points(s_network_slash_line, s_wifi_slash_points, 2);
+    lv_obj_set_style_line_width(s_network_slash_line, 2, 0);
+    lv_obj_set_style_line_color(s_network_slash_line, lv_color_black(), 0);
+    lv_obj_set_style_line_rounded(s_network_slash_line, true, 0);
+    lv_obj_align_to(s_network_slash_line, s_network_label, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(s_network_slash_line, LV_OBJ_FLAG_HIDDEN);
+
+    return ESP_OK;
+}
+
+static esp_err_t create_status_labels(void)
+{
+    s_offline_banner = create_center_label(s_screen, UI_TEXT_WIDTH, lv_color_white(),
+                                           LV_ALIGN_TOP_MID, UI_OFFLINE_BANNER_Y);
+    if (s_offline_banner == NULL) return ESP_ERR_NO_MEM;
+    lv_label_set_text(s_offline_banner, "OFFLINE MODE");
+
+    s_status_area = lv_obj_create(s_screen);
+    if (s_status_area == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_remove_style_all(s_status_area);
+    lv_obj_set_size(s_status_area, BSP_TFT_GetWidth(), UI_STATUS_AREA_HEIGHT);
+    lv_obj_align(s_status_area, LV_ALIGN_CENTER, 0, -UI_BOTTOM_PANEL_HEIGHT / 2);
+
+    s_state_label = create_center_label(s_status_area, UI_STATE_TEXT_WIDTH,
+                                        lv_color_white(), LV_ALIGN_CENTER, UI_STATE_LABEL_OFFSET_Y);
+    if (s_state_label == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_set_style_text_font(s_state_label, ui_state_font(), 0);
+    lv_label_set_long_mode(s_state_label, LV_LABEL_LONG_CLIP);
+    return ESP_OK;
+}
+
+static esp_err_t create_button_row(void)
+{
+    /* 分隔线 */
+    s_divider = lv_obj_create(s_screen);
+    if (s_divider == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_remove_style_all(s_divider);
+    lv_obj_set_size(s_divider, BSP_TFT_GetWidth(), UI_DIVIDER_HEIGHT);
+    lv_obj_align(s_divider, LV_ALIGN_TOP_MID, 0, UI_BOTTOM_PANEL_Y - UI_DIVIDER_HEIGHT);
+    lv_obj_set_style_bg_opa(s_divider, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_divider, lv_color_hex(0xFFFFFF), 0);
+
+    /* 底部白色面板 */
+    s_bottom_panel = lv_obj_create(s_screen);
+    if (s_bottom_panel == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_remove_style_all(s_bottom_panel);
+    lv_obj_set_size(s_bottom_panel, BSP_TFT_GetWidth(), UI_BOTTOM_PANEL_HEIGHT);
+    lv_obj_align(s_bottom_panel, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(s_bottom_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_bottom_panel, lv_color_white(), 0);
+
+    /* Confirm 按钮（绿底白字） */
+    s_confirm_button = lv_obj_create(s_screen);
+    if (s_confirm_button == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_remove_style_all(s_confirm_button);
+    lv_obj_set_size(s_confirm_button, UI_BUTTON_WIDTH, UI_BUTTON_HEIGHT);
+    lv_obj_align_to(s_confirm_button, s_bottom_panel, LV_ALIGN_LEFT_MID, UI_BUTTON_SIDE_MARGIN, 0);
+    style_button_box(s_confirm_button, lv_color_hex(0x147A46));
+    s_confirm_label = create_button_label(s_confirm_button, "Confirm");
+    if (s_confirm_label == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_set_style_text_font(s_confirm_label, LV_FONT_DEFAULT, 0);
+
+    /* SOS 按钮（红底白字） */
+    s_sos_button = lv_obj_create(s_screen);
+    if (s_sos_button == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_remove_style_all(s_sos_button);
+    lv_obj_set_size(s_sos_button, UI_BUTTON_WIDTH, UI_BUTTON_HEIGHT);
+    lv_obj_align_to(s_sos_button, s_bottom_panel, LV_ALIGN_RIGHT_MID, -UI_BUTTON_SIDE_MARGIN, 0);
+    style_button_box(s_sos_button, lv_color_hex(0xC92F2A));
+    s_sos_label = create_button_label(s_sos_button, "SOS");
+    if (s_sos_label == NULL) return ESP_ERR_NO_MEM;
+    lv_obj_set_style_text_font(s_sos_label, LV_FONT_DEFAULT, 0);
+
+    return ESP_OK;
+}
+
+/** 从零开始构建整个 LVGL 控件树 */
+static esp_err_t build_ui_tree(void)
+{
+    s_screen = lv_obj_create(NULL);
+    if (s_screen == NULL) return ESP_ERR_NO_MEM;
+
+    lv_obj_remove_style_all(s_screen);
+    lv_obj_set_size(s_screen, BSP_TFT_GetWidth(), BSP_TFT_GetHeight());
+    lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_screen, lv_color_hex(0x1E9E55), 0);  /* 默认绿色=NORMAL */
+    lv_obj_set_style_pad_all(s_screen, 0, 0);
+
+    esp_err_t ret;
+    ret = create_top_bar();        if (ret != ESP_OK) return ret;
+    ret = create_status_labels();  if (ret != ESP_OK) return ret;
+    ret = create_button_row();     if (ret != ESP_OK) return ret;
+
+    lv_screen_load(s_screen);
+    return ESP_OK;
+}
+
+/** 更新联网/离线相关的 UI 元素 */
+static void update_online_styles(bool online)
+{
+    const lv_color_t top_bar_color = lv_color_white();
+    const lv_color_t text_color = lv_color_hex(0x1E1E1E);
+
+    lv_obj_set_style_bg_color(s_top_bar, top_bar_color, 0);
+    lv_obj_set_style_text_color(s_time_label, text_color, 0);
+    lv_obj_set_style_text_color(s_network_label, text_color, 0);
+    lv_obj_add_flag(s_offline_banner, LV_OBJ_FLAG_HIDDEN);  /* 默认隐藏离线横幅 */
+
+    if (online) {
+        lv_obj_add_flag(s_network_slash_line, LV_OBJ_FLAG_HIDDEN);    /* 在线 = 隐藏斜线 */
+    } else {
+        lv_obj_remove_flag(s_network_slash_line, LV_OBJ_FLAG_HIDDEN); /* 离线 = 显示斜线 */
+    }
+}
+
 /* ================================================================
  * 公开接口
  * ================================================================ */
@@ -194,103 +392,37 @@ esp_err_t DisplayController_Init(void)
         return ret;
     }
 
-    /* 2. 创建 LVGL 全局递归锁，所有控件访问都必须持锁。 */
-    s_lvgl_mutex = xSemaphoreCreateRecursiveMutex();
-    if (s_lvgl_mutex == NULL) {
-        s_enabled = false;
-        return ESP_ERR_NO_MEM;
-    }
-    if (!lvgl_lock(portMAX_DELAY)) {
-        s_enabled = false;
-        return ESP_ERR_TIMEOUT;
-    }
-
-    /* 3. 初始化 LVGL 库 */
+    /* 2. 初始化 LVGL 库 */
     lv_init();
 
-    /* 4. 创建 LVGL display 对象 */
+    /* 3. 创建 LVGL display 对象 */
     s_display = lv_display_create(BSP_TFT_GetWidth(), BSP_TFT_GetHeight());
-    if (s_display == NULL) {
-        lvgl_unlock();
-        s_enabled = false;
-        return ESP_ERR_NO_MEM;
-    }
+    if (s_display == NULL) { s_enabled = false; return ESP_ERR_NO_MEM; }
 
-    /* 5. 分配内部 SRAM 中显式对齐的 DMA 双缓冲。 */
+    /* 4. 分配 DMA 双缓冲（必须用 heap_caps_malloc 分配 DMA 可用内存） */
     size_t draw_buffer_size = BSP_TFT_GetWidth() * BSP_TFT_DRAW_BUFFER_LINES * sizeof(lv_color16_t);
-    s_buf1 = heap_caps_aligned_alloc(LVGL_DMA_ALIGNMENT_BYTES, draw_buffer_size,
-                                     MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    s_buf2 = heap_caps_aligned_alloc(LVGL_DMA_ALIGNMENT_BYTES, draw_buffer_size,
-                                     MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (s_buf1 == NULL || s_buf2 == NULL) {
-        heap_caps_free(s_buf1);
-        heap_caps_free(s_buf2);
-        s_buf1 = NULL;
-        s_buf2 = NULL;
-        lvgl_unlock();
-        s_enabled = false;
-        return ESP_ERR_NO_MEM;
-    }
-    ESP_LOGI(TAG, "LVGL DMA buffers=%u bytes each, internal free=%u bytes",
-             (unsigned)draw_buffer_size,
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    s_buf1 = heap_caps_malloc(draw_buffer_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    s_buf2 = heap_caps_malloc(draw_buffer_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (s_buf1 == NULL || s_buf2 == NULL) { s_enabled = false; return ESP_ERR_NO_MEM; }
 
-    /* 6. 配置 LVGL display：双缓冲 + RGB565 颜色格式 + flush 回调 */
+    /* 5. 配置 LVGL display：双缓冲 + RGB565 颜色格式 + flush 回调 */
     lv_display_set_buffers(s_display, s_buf1, s_buf2, draw_buffer_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_color_format(s_display, LV_COLOR_FORMAT_RGB565);
     lv_display_set_flush_cb(s_display, tft_flush_cb);
     lv_display_set_user_data(s_display, BSP_TFT_GetPanelHandle());
     lv_display_set_default(s_display);
 
-    /* 7. 注册颜色传输完成回调（DMA 完成后通知 LVGL） */
+    /* 6. 注册颜色传输完成回调（DMA 完成后通知 LVGL） */
     const bsp_tft_callbacks_t callbacks = {
         .on_color_trans_done = tft_flush_done,
         .user_ctx = s_display,
     };
     ret = BSP_TFT_RegisterCallbacks(&callbacks);
-    if (ret != ESP_OK) {
-        lvgl_unlock();
-        s_enabled = false;
-        return ret;
-    }
+    if (ret != ESP_OK) { s_enabled = false; return ret; }
 
-    /* 8. 创建 UI 控件树 */
-    ret = ui_init();
-    lvgl_unlock();
-    if (ret != ESP_OK) {
-        s_enabled = false;
-        return ret;
-    }
-
-    /* 9. 启动 2ms tick 定时器和独立 LVGL 刷新任务。 */
-    const esp_timer_create_args_t tick_timer_args = {
-        .callback = lvgl_tick_timer_cb,
-        .arg = NULL,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "lvgl_tick",
-    };
-    ret = esp_timer_create(&tick_timer_args, &s_lvgl_tick_timer);
-    if (ret != ESP_OK) {
-        s_enabled = false;
-        return ret;
-    }
-    ret = esp_timer_start_periodic(s_lvgl_tick_timer, LVGL_TICK_PERIOD_MS * 1000U);
-    if (ret != ESP_OK) {
-        esp_timer_delete(s_lvgl_tick_timer);
-        s_lvgl_tick_timer = NULL;
-        s_enabled = false;
-        return ret;
-    }
-
-    BaseType_t task_created = xTaskCreate(lvgl_task, "lvgl", LVGL_TASK_STACK_SIZE, NULL,
-                                          LVGL_TASK_PRIORITY, &s_lvgl_task_handle);
-    if (task_created != pdPASS) {
-        esp_timer_stop(s_lvgl_tick_timer);
-        esp_timer_delete(s_lvgl_tick_timer);
-        s_lvgl_tick_timer = NULL;
-        s_enabled = false;
-        return ESP_ERR_NO_MEM;
-    }
+    /* 7. 创建 UI 控件树 */
+    ret = build_ui_tree();
+    if (ret != ESP_OK) { s_enabled = false; return ret; }
 
     s_enabled = true;
     return DisplayController_Update(APP_STATE_NORMAL, &(sensor_hub_data_t){0}, &(risk_result_t){0});
@@ -304,69 +436,41 @@ esp_err_t DisplayController_Update(app_state_t app_state,
 {
     if (!s_enabled) return ESP_OK;
     if (sensor_data == NULL || risk_result == NULL) return ESP_ERR_INVALID_ARG;
-    if (!lvgl_lock(pdMS_TO_TICKS(LVGL_LOCK_TIMEOUT_MS))) return ESP_ERR_TIMEOUT;
 
-    /* 缓存最新传感器数据，供 lvgl_task 在状态变化时即时刷新 */
-    s_last_sensor_data = *sensor_data;
-    s_has_sensor_data = true;
-
-    const app_state_t previous_state = s_current_state;
-    s_current_state = app_state;
     char time_text[8] = "--:--";
     build_time_text(time_text, sizeof(time_text));
 
     const bool online = WiFiManager_IsConnected();
+    const display_state_style_t style = display_state_style(app_state);
 
-    /* 格式化并显示传感器数据 (现在只显示温度) */
-    char sensor_text[64] = "--.- C";
-    if (sensor_data->aht20_ok) {
-        snprintf(sensor_text, sizeof(sensor_text), "%.1f C", sensor_data->aht_temperature);
-    }
+    /* 背景色：在线用状态色，离线用灰色 */
+    lv_obj_set_style_bg_color(s_screen, online ? style.bg_color : lv_color_hex(0x6F7680), 0);
+    update_online_styles(online);
 
-    esp_err_t ret = ui_update(app_state, online, time_text, sensor_text);
-    if (ret == ESP_OK && previous_state != APP_STATE_NORMAL && app_state == APP_STATE_NORMAL) {
-        ui_set_activity(DISPLAY_ACTIVITY_CONFIRMED);
-    }
-    lvgl_unlock();
-    return ret;
-}
+    lv_label_set_text(s_time_label, time_text);
+    lv_label_set_text(s_network_label, LV_SYMBOL_WIFI);
+    /* 主状态显示：在线用 NORMAL/REMIND/ALARM/SOS，离线用 OFFLINE */
+    lv_label_set_text(s_state_label, online ? style.state_text : "OFFLINE");
 
-/** 保留旧服务入口；独立 LVGL 任务已经接管 tick、动画和重绘。 */
-esp_err_t DisplayController_Service(uint32_t elapsed_ms)
-{
-    /* 保留旧接口兼容主循环；tick 和刷新现由独立任务负责。 */
-    (void)elapsed_ms;
+    /* 把顶栏控件提升到最前，防止被背景覆盖 */
+    lv_obj_move_foreground(s_time_label);
+    lv_obj_move_foreground(s_network_label);
+    lv_obj_move_foreground(s_network_slash_line);
+
+    lv_timer_handler();  /* 立即处理一次 LVGL 任务 */
     return ESP_OK;
 }
 
 /**
- * @brief 在屏幕上显示一条临时消息（Agent命令）
- * @param message 要显示的消息内容
- * @param duration_seconds 显示持续时间（秒）
+ * @brief 推进 LVGL 内部时钟——每 100ms 调用一次。
+ *        lv_tick_inc 告诉 LVGL"时间过去了多少"，
+ *        lv_timer_handler 让 LVGL 处理积累的定时任务和重绘请求。
  */
-esp_err_t DisplayController_ShowMessage(const char *message, int duration_seconds)
+esp_err_t DisplayController_Service(uint32_t elapsed_ms)
 {
     if (!s_enabled) return ESP_OK;
-    if (message == NULL) return ESP_ERR_INVALID_ARG;
-    if (!lvgl_lock(pdMS_TO_TICKS(LVGL_LOCK_TIMEOUT_MS))) return ESP_ERR_TIMEOUT;
 
-    ESP_LOGI(TAG, "ShowMessage: \"%s\" for %d seconds", message, duration_seconds);
-
-    /* 调用 UI 层显示消息，所有 LVGL 操作均处于递归锁保护内。 */
-    ui_show_temporary_message(message, duration_seconds);
-    lvgl_unlock();
-    return ESP_OK;
-}
-
-esp_err_t DisplayController_SetActivity(display_activity_t activity)
-{
-    if (!s_enabled) return ESP_OK;
-    if (activity < DISPLAY_ACTIVITY_NONE || activity > DISPLAY_ACTIVITY_CONFIRMED) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (!lvgl_lock(pdMS_TO_TICKS(LVGL_LOCK_TIMEOUT_MS))) return ESP_ERR_TIMEOUT;
-
-    ui_set_activity(activity);
-    lvgl_unlock();
+    lv_tick_inc(elapsed_ms);
+    lv_timer_handler();
     return ESP_OK;
 }

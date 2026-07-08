@@ -67,30 +67,9 @@ static uint32_t s_temp_clear_since_ms = 0;
 static temp_sample_t s_temp_history[TEMP_HISTORY_SIZE] = {0};
 static uint8_t s_temp_history_index = 0;
 
-/* 运行时模式（初始化为编译期默认值，可通过 RiskEngine_SetRunMode() 动态切换） */
-static risk_run_mode_t s_run_mode = RISK_ENGINE_RUN_MODE;
-
-static void reset_mq2_tracking(void);  /* 前向声明 */
-
 static const risk_config_t *get_active_config(void)
 {
-    return s_run_mode == RISK_RUN_MODE_REAL ? &s_real_config : &s_demo_config;
-}
-
-void RiskEngine_SetRunMode(risk_run_mode_t mode)
-{
-    if (mode == s_run_mode) {
-        return;
-    }
-    s_run_mode = mode;
-    /* 切换模式后重置 MQ2 滤波跟踪，避免旧模式的累积数据影响新模式判断 */
-    reset_mq2_tracking();
-    ESP_LOGI(TAG, "run mode switched to %s", mode == RISK_RUN_MODE_REAL ? "REAL" : "DEMO");
-}
-
-risk_run_mode_t RiskEngine_GetRunMode(void)
-{
-    return s_run_mode;
+    return RISK_ENGINE_RUN_MODE == RISK_RUN_MODE_REAL ? &s_real_config : &s_demo_config;
 }
 
 static void reset_mq2_tracking(void)
@@ -329,7 +308,6 @@ void RiskEngine_Evaluate(const sensor_hub_data_t *data,
 
     result->manual_sos = context->manual_sos_active;
     result->remind_timeout = context->remind_timeout_active;
-    result->fall_detected = context->fall_detected;
 
     if (result->no_motion_timeout) {
         result->activity_score += 1;
@@ -351,7 +329,7 @@ void RiskEngine_Evaluate(const sensor_hub_data_t *data,
                           result->environment_score +
                           result->manual_score;
 
-    if (result->manual_sos || result->mq2_high_alarm || result->mq2_temp_rise_alarm || result->fall_detected) {
+    if (result->manual_sos || result->mq2_high_alarm || result->mq2_temp_rise_alarm) {
         result->level = RISK_LEVEL_EMERGENCY;
     } else if (result->remind_timeout) {
         result->level = RISK_LEVEL_WARNING;
@@ -410,9 +388,6 @@ void RiskEngine_BuildReasonString(const risk_result_t *result, char *buffer, siz
     }
     if (result->mq2_temp_rise_alarm) {
         append_reason(buffer, buffer_size, "烟雾或可燃气体异常并伴随温度明显上升，已启动本地报警并上报云端", &first);
-    }
-    if (result->fall_detected) {
-        append_reason(buffer, buffer_size, "检测到人体距离骤降且持续静止在地面高度，疑似跌倒，已启动报警并上报云端", &first);
     }
 }
 

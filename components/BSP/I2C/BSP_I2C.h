@@ -1,15 +1,21 @@
 /**
  * @file BSP_I2C.h
  * @brief 共享 I2C 总线管理——为 AHT20/BH1750/OLED 等设备提供统一的总线初始化接口。
+ *
+ * 【学弟必读】
+ * - I2C 是一种两线制串行总线（SDA 数据线 + SCL 时钟线），一个总线上可以挂多个设备。
+ * - 本模块封装了"全局只初始化一次"的共享 I2C 总线，所有 I2C 传感器（温湿度/光照/OLED屏）共用它。
+ * - 重复调用相同配置不会报错，但不同配置会被拒绝（防止引脚冲突）。
+ * - 底层依赖第三方的 i2cdev 组件来实际操作寄存器。
  */
 
 #pragma once
 
-#include <stdbool.h>
-#include <stdint.h>
-#include "driver/gpio.h"
-#include "driver/i2c.h"
-#include "esp_err.h"
+#include <stdbool.h>   /* bool 类型 */
+#include <stdint.h>    /* uint32_t 等定长整数 */
+#include "driver/gpio.h"   /* ESP-IDF GPIO 驱动（gpio_num_t） */
+#include "driver/i2c.h"    /* ESP-IDF I2C 驱动（i2c_port_t） */
+#include "esp_err.h"        /* ESP-IDF 统一错误码（esp_err_t） */
 
 /* ---- 初始化 ---- */
 
@@ -30,7 +36,8 @@ esp_err_t BSP_I2C_Init(i2c_port_t port, gpio_num_t sda_io_num, gpio_num_t scl_io
 bool BSP_I2C_IsInitialized(void);
 
 /**
- * @brief 获取当前 I2C 控制器编号。
+ * @brief 获取当前使用的 I2C 控制器编号。
+ * 其他传感器模块需要知道自己在哪条 I2C 总线上，才能正确通信。
  */
 i2c_port_t BSP_I2C_GetPort(void);
 

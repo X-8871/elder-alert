@@ -2,8 +2,17 @@
  * @file Alert.c
  * @brief LED + 蜂鸣器声光提示驱动实现——基于 FreeRTOS tick 的非阻塞节拍控制。
  *
- * 每次 Update() 检查当前时间与上次翻转时间的差值，
- * 达到对应模式的闪烁间隔时翻转 LED/蜂鸣器状态。
+ * 【学弟必读：非阻塞闪烁的实现原理】
+ * 关键变量：s_last_toggle_tick（上次翻转的时刻）
+ *
+ * 每次 Update() 被调用时：
+ *   当前时间 - 上次翻转时间 >= 闪烁间隔？
+ *     ├─ 是 → 翻转 LED/蜂鸣器状态，更新上次翻转时间
+ *     └─ 否 → 什么都不做，直接返回
+ *
+ * 这样就实现了"不阻塞主循环的闪烁效果"。
+ * 不同的模式（NORMAL/REMIND/ALARM/SOS）只有间隔不同，
+ * 翻转逻辑完全一样。
  */
 
 #include "BSP_Alert.h"
@@ -33,8 +42,7 @@ static esp_err_t set_gpio_level(gpio_num_t gpio, bool on)
     return gpio_set_level(gpio, on ? 1 : 0);
 }
 
-/** 同时设置 LED 和蜂鸣器的输出状态并记录。
- *  蜂鸣器为低电平触发（active-low），输出电平需要取反。 */
+/** 同时设置 LED 和蜂鸣器的输出状态并记录 */
 static esp_err_t apply_outputs(bool led_on, bool buzzer_on)
 {
     esp_err_t ret = set_gpio_level(s_led_gpio, led_on);
@@ -42,7 +50,7 @@ static esp_err_t apply_outputs(bool led_on, bool buzzer_on)
         return ret;
     }
 
-    ret = set_gpio_level(s_buzzer_gpio, !buzzer_on);
+    ret = set_gpio_level(s_buzzer_gpio, buzzer_on);
     if (ret != ESP_OK) {
         return ret;
     }

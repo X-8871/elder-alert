@@ -1,12 +1,25 @@
 /**
  * @file BSP_MQ2.h
  * @brief MQ2 烟雾/可燃气体传感器驱动封装——通过 ADC（模数转换器）采集模拟信号。
+ *
+ * 【学弟必读：MQ2 传感器原理】
+ * MQ2 是一个半导体气敏传感器，能检测烟雾、液化气、甲烷等可燃气体。
+ * - 输出模拟电压：气体浓度越高 → 传感器电导率越大 → 输出电压越高。
+ * - ESP32 没有电压表，只能用 ADC 把模拟电压转换成数字量（0~4095）。
+ * - ADC 原始值和实际电压之间有偏差，需要"校准"（calibration）来修正。
+ *
+ * 【校准是什么？】
+ * ESP32 ADC 的原始值 raw 和实际电压 mV 不是一一对应的（有非线性误差）。
+ * 本驱动支持两种自动校准方案：
+ * - 曲线拟合（curve fitting）：更精确，需要芯片支持。
+ * - 线性拟合（line fitting）：较简单，兼容性更好。
+ * 校准成功时 voltage_mv 有实际电压值；不成功时 voltage_mv = -1。
  */
 
 #pragma once
 
 #include <stdbool.h>
-#include "driver/gpio.h"
+#include "driver/gpio.h"  /* gpio_num_t */
 #include "esp_err.h"
 
 /** MQ2 单次读数的结果。 */

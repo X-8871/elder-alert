@@ -2,8 +2,25 @@
  * @file AppController.h
  * @brief 应用层状态机——管理 NORMAL / REMIND / ALARM / SOS 四种业务状态。
  *
- * 状态优先级：SOS > ALARM > REMIND > NORMAL。
- * 休息上下文(REST)：低光 + 长时间无活动时认为老人在睡觉，休息期间不因无活动触发 REMIND。
+ * 【学弟必读：状态机是什么？】
+ * 想象一个交通信号灯：它只能在"红→绿→黄→红"这几个状态之间切换，
+ * 不会突然出现"蓝色"。AppController 做的事情类似：
+ * - 系统在 NORMAL 状态下运行
+ * - 传感器发现异常 → 状态改为 REMIND（提醒老人确认一下）
+ * - 老人很久没按确认键 → 状态升级为 ALARM（告警，通知远程家属）
+ * - 老人按下 SOS 键 → 不管当前什么状态，直接进入 SOS（最高优先级）
+ *
+ * 【四个状态的含义】
+ * - NORMAL：一切正常，绿色
+ * - REMIND：有异常需要老人确认，橙色（温和提醒）
+ * - ALARM：较严重或超时未确认，红色（需要外部关注）
+ * - SOS：老人主动求助，最紧急，深红
+ *
+ * 【休息上下文 (REST)】
+ * 当环境光照很低 + 长时间没有人活动时，系统认为老人在睡觉。
+ * "REST" 不是第五个状态，而是内部的"标记"——
+ * 在休息期间，不会因为长时间无活动而进入 REMIND（避免半夜吵醒老人）。
+ * TFT 屏幕上也不会显示 REST，只显示当前的 NORMAL/REMIND/ALARM/SOS。
  */
 
 #pragma once
@@ -44,12 +61,6 @@
 #define APP_CONTROLLER_LOW_LIGHT_ACTIVITY_WINDOW_MS_DEMO 30000U
 #define APP_CONTROLLER_LOW_LIGHT_ACTIVITY_WINDOW_MS_REAL (60U * 1000U)
 
-/* 跌倒检测参数（基于 LD2410B 距离骤降 + 持续静止） */
-#define APP_CONTROLLER_FALL_DROP_THRESHOLD_CM 80U    /* 距离骤降>=80cm 判为可能跌倒 */
-#define APP_CONTROLLER_FALL_CONFIRM_MS_DEMO 10000U   /* DEMO: 静止10秒确认跌倒 */
-#define APP_CONTROLLER_FALL_CONFIRM_MS_REAL 30000U   /* REAL: 静止30秒确认跌倒 */
-#define APP_CONTROLLER_FALL_CLEAR_ACTIVITY_MS 5000U  /* 持续活动5秒清除跌倒标记 */
-
 #define APP_CONTROLLER_RUN_MODE RISK_ENGINE_RUN_MODE  /* 与 RiskEngine 共用运行模式 */
 
 /** 应用状态枚举——按风险从低到高排列 */
@@ -85,7 +96,6 @@ uint32_t AppController_GetInactiveTimeMs(void);   /* 距上次检测到活动过
 bool AppController_IsSosLatched(void);             /* SOS 是否处于锁存状态 */
 bool AppController_IsRemindTimeoutLatched(void);   /* REMIND 是否已超时升级 */
 bool AppController_IsRestContextActive(void);      /* 是否处于休息上下文 */
-bool AppController_IsFallDetected(void);           /* 跌倒检测是否确认 */
 uint32_t AppController_GetSosTriggerCount(void);   /* SOS 累计触发次数 */
 const char *AppController_StateToString(app_state_t state);
 
@@ -95,16 +105,3 @@ const char *AppController_StateToString(app_state_t state);
  *        调用即消费——同一事件不会返回两次。
  */
 const char *AppController_TakePendingVoicePromptKey(void);
-
-/**
- * @brief 远程确认（Agent 命令调用）。
- *        设置一个待确认标志，下次 AppController_Service() 时消费，
- *        效果等同按下确认键。
- */
-void AppController_RemoteConfirm(void);
-
-/**
- * @brief 运行时切换 DEMO/REAL 模式（由 Agent 命令触发）。
- *        内部会同步调用 RiskEngine_SetRunMode()。
- */
-void AppController_SetRunMode(risk_run_mode_t mode);

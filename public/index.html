@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>居家安全看护面板</title>
-    <link rel="stylesheet" href="styles.css?v=20260708-1330" />
+    <link rel="stylesheet" href="styles.css?v=20260527-1500" />
   </head>
   <body>
     <div class="app-frame">
@@ -256,7 +256,6 @@
               <p class="section-label">智能管家</p>
               <h2>Agent 活动状态</h2>
             </div>
-            <span id="agent-voice-mode-badge" class="quiet-pill">--</span>
           </div>
           <div class="detail-grid agent-grid">
             <div>
@@ -270,25 +269,6 @@
               <ul id="agent-recent-actions" class="agent-actions-list">
                 <li>加载中...</li>
               </ul>
-            </div>
-          </div>
-          <div style="margin-top:16px;">
-            <span class="section-label">Agent 工具箱（14 项能力）</span>
-            <div id="agent-tools-grid" class="agent-tools-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-top:8px;">
-              <span class="quiet-pill">加载中...</span>
-            </div>
-          </div>
-          <div style="margin-top:16px;">
-            <span class="section-label">患者信息（注入 AI 提示词）</span>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
-              <input id="patient-name" type="text" placeholder="患者称呼（如：王爷爷）" maxlength="50" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);">
-              <input id="patient-address" type="text" placeholder="怎么称呼他（如：老王、王师傅）" maxlength="20" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);">
-            </div>
-            <textarea id="patient-conditions" placeholder="健康状况/疾病（如：高血压、糖尿病、轻度耳背）" maxlength="500" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);margin-top:8px;resize:vertical;"></textarea>
-            <textarea id="patient-notes" placeholder="注意事项（如：按时吃药、饮食清淡、避免剧烈运动）" maxlength="500" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);margin-top:8px;resize:vertical;"></textarea>
-            <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
-              <button id="patient-save-btn" class="btn btn-primary" style="padding:6px 16px;">保存患者信息</button>
-              <span id="patient-save-status" class="quiet-pill"></span>
             </div>
           </div>
         </article>
@@ -311,7 +291,7 @@
               <button type="button" data-run-mode="REAL">真实模式</button>
               <button type="button" data-run-mode="">跟随设备</button>
             </div>
-            <p id="mode-effective-note" class="mode-note">生效模式以设备上报为准。切换后指令将在下次遥测时下发到设备。</p>
+            <p id="mode-effective-note" class="mode-note">生效模式以设备上报为准。切换偏好后需重启设备或等待固件轮询。</p>
           </div>
             <div class="detail-grid mode-grid">
               <div><span>当前模式</span><strong id="mode-current-detail">-</strong></div>
@@ -352,63 +332,6 @@
             <summary>最近原始数据</summary>
             <pre id="raw-payload-box">等待数据...</pre>
           </details>
-        </article>
-
-        <article id="notification-panel" class="panel notification-panel" data-view="mode">
-          <div class="panel-head">
-            <div>
-              <p class="section-label">邮件通知</p>
-              <h2>SOS 邮件报警配置</h2>
-            </div>
-            <span id="notification-status" class="quiet-pill">加载中...</span>
-          </div>
-          <div class="notification-config-card">
-            <div class="notification-toggle">
-              <label class="filter-inline" for="notification-enabled">
-                <span>启用邮件通知</span>
-                <select id="notification-enabled">
-                  <option value="true">启用</option>
-                  <option value="false">关闭</option>
-                </select>
-              </label>
-              <label class="filter-inline" for="notification-threshold">
-                <span>通知阈值</span>
-                <select id="notification-threshold">
-                  <option value="SOS">仅 SOS</option>
-                  <option value="ALARM_SOS">ALARM + SOS</option>
-                  <option value="REMIND_ALARM_SOS">REMIND + ALARM + SOS</option>
-                </select>
-              </label>
-            </div>
-            <div class="notification-recipients">
-              <label for="notification-recipients">
-                <span class="section-label">收件人邮箱</span>
-                <small>多个邮箱用分号或逗号分隔；留空则使用服务器默认收件人</small>
-              </label>
-              <textarea id="notification-recipients" rows="2" placeholder="例如：family@example.com; neighbor@example.com"></textarea>
-            </div>
-            <div class="notification-templates">
-              <div>
-                <label for="notification-subject">
-                  <span class="section-label">邮件主题模板</span>
-                  <small>可用变量：{{state}} {{device_id}} {{time}} {{reason}}</small>
-                </label>
-                <input id="notification-subject" type="text" placeholder="[{{state}}] 设备 {{device_id}} 触发紧急通知" />
-              </div>
-              <div>
-                <label for="notification-body">
-                  <span class="section-label">邮件正文模板</span>
-                  <small>可用变量：{{state}} {{device_id}} {{time}} {{reason}} {{dashboard_url}}</small>
-                </label>
-                <textarea id="notification-body" rows="4" placeholder="独居老人守护终端检测到 {{state}} 状态。&#10;设备：{{device_id}}&#10;时间：{{time}}&#10;原因：{{reason}}"></textarea>
-              </div>
-            </div>
-            <div class="notification-actions">
-              <button id="notification-save-button" type="button">保存配置</button>
-              <button id="notification-test-button" type="button" class="secondary-button">发送测试邮件</button>
-            </div>
-            <p id="notification-message" class="panel-note"></p>
-          </div>
         </article>
 
         <article id="debug-panel" class="panel speech-panel" data-view="debug">
@@ -475,7 +398,7 @@
       </footer>
     </div>
 
-    <script src="app.js?v=20260708-1400"></script>
+    <script src="app.js?v=20260527-1500"></script>
     <audio id="voice-preview-audio" hidden></audio>
   </body>
 </html>

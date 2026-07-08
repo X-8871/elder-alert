@@ -1,40 +1,56 @@
 /**
  * @file main.c
- * @brief 系统入口 —— app_main() 初始化各模块并运行主循环。
+ * @brief 系统入口 —— app_main() 是整个固件的"总指挥部"。
+ *
+ * 【学弟必读：这个文件做什么？】
+ * 把 main.c 想象成一个乐队的指挥：
+ * - 她不亲自演奏任何乐器（不直接操作 GPIO/I2C/ADC）
+ * - 她告诉各个声部什么时候进、什么时候停（初始化顺序、主循环调度）
+ * - 她确保整个乐队节奏统一（外层 2s 采样 + 内层 100ms 服务）
+ *
+ * 代码阅读顺序建议：
+ *   1. 先看本文件顶部的"系统总架构说明"
+ *   2. 看 app_main() 的 9 步初始化顺序
+ *   3. 看主循环 while(1) 的执行流程
+ *   4. 再跳到 components/Middlewares/ 看各模块具体实现
+ *   5. 最后看 components/BSP/ 的硬件驱动
  */
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_err.h"
-#include "esp_event.h"
-#include "esp_log.h"
-#include "esp_netif.h"
-#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"   /* FreeRTOS 内核（任务调度、tick、延时） */
+#include "freertos/task.h"       /* vTaskDelay / xTaskGetTickCount */
+#include "esp_err.h"             /* ESP-IDF 统一错误码 */
+#include "esp_event.h"           /* 事件驱动框架 */
+#include "esp_log.h"             /* 日志宏 ESP_LOGI/ESP_LOGW/ESP_LOGE */
+#include "esp_netif.h"           /* 网络接口框架（Wi-Fi 联网需要） */
+#include "driver/gpio.h"         /* GPIO 驱动 */
 
-/* ---- BSP 层 ---- */
-#include "BSP_INMP441.h"
-#include "BSP_LD2410B.h"
-#include "BSP_MAX98357A.h"
+/* ---- 本项目 BSP 层（硬件驱动）---- */
+#include "BSP_INMP441.h"         /* I2S 麦克风 */
+#include "BSP_LD2410B.h"         /* 毫米波人体存在雷达 */
+#include "BSP_MAX98357A.h"       /* I2S 功放+喇叭 */
 
-/* ---- 中间件层 ---- */
-#include "AppController.h"
-#include "AlertController.h"
-#include "DisplayController.h"
-#include "EventLog.h"
-#include "HttpAlertReporter.h"
-#include "InputController.h"
-#include "RainMakerReporter.h"
-#include "RiskEngine.h"
-#include "SensorHub.h"
-#include "SpeechReplyPlayer.h"
-#include "SpeechUploader.h"
-#include "VoicePrompt.h"
-#include "WiFiManager.h"
+/* ---- 本项目中间件层（业务编排）---- */
+#include "AppController.h"       /* 应用状态机 NORMAL/REMIND/ALARM/SOS */
+#include "AlertController.h"     /* 声光提醒控制 */
+#include "DisplayController.h"   /* LVGL TFT 显示 */
+#include "EventLog.h"            /* 异常事件日志 */
+#include "HttpAlertReporter.h"   /* HTTP 云端上报 */
+#include "InputController.h"     /* 按键事件封装 */
+#include "RainMakerReporter.h"   /* RainMaker 备选上报 */
+#include "RiskEngine.h"          /* 风险评估引擎 */
+#include "SensorHub.h"           /* 传感器统一采集中枢 */
+#include "SpeechReplyPlayer.h"   /* 云端 TTS 音频下载播放 */
+#include "SpeechUploader.h"      /* 语音录制+上传 ASR */
+#include "VoicePrompt.h"         /* 本地固定人声提示 */
+#include "WiFiManager.h"         /* Wi-Fi STA + BLE 配网 + SNTP */
 
 #define TAG "SENSOR_DEMO"  /* 串口日志标签 */
 
 /* ================================================================
- * 编译期测试开关
+ * 测试开关：编译期可以单独启用某个硬件模块的独立测试
+ *
+ * 正常业务运行时这些应该全部为 0（除了语音上传测试）。
+ * 需要单独调试某个模块时，把对应宏改为 1 重新编译烧录。
  * ================================================================ */
 
 #define ENABLE_LD2410B_UART_TEST 0       /* LD2410B 雷达 UART 独立测试模式 */
@@ -49,7 +65,7 @@
 #define INMP441_TEST_BCLK_GPIO     GPIO_NUM_12
 #define INMP441_TEST_WS_GPIO       GPIO_NUM_13
 #define INMP441_TEST_DIN_GPIO      GPIO_NUM_14
-#define INMP441_UPLOAD_RECORD_MS   5000U  /* 每次录音时长 5 秒 */
+#define INMP441_UPLOAD_RECORD_MS   3000U  /* 每次录音时长 3 秒 */
 
 #define ENABLE_MAX98357A_OUTPUT_TEST 0   /* 开机功放测试音（3声滴滴） */
 #define ENABLE_MAX98357A_UPLOAD_OK_PROMPT 1 /* 录音上传成功后播放云端/本地提示音 */
@@ -58,7 +74,7 @@
 #define MAX98357A_TEST_BCLK_GPIO     GPIO_NUM_12
 #define MAX98357A_TEST_WS_GPIO       GPIO_NUM_13
 #define MAX98357A_TEST_DOUT_GPIO     GPIO_NUM_15
-#define MAX98357A_TEST_SD_GPIO       GPIO_NUM_21  /* SD=Shutdown 关断引脚 */
+#define MAX98357A_TEST_SD_GPIO       GPIO_NUM_21  /* SD=Shutdown 关断引脚，注意不能和 I2C_SDA(GPIO4) 共用 */
 
 /* ================================================================
  * 独立测试模式函数（仅当对应宏开启时编译）
@@ -148,7 +164,7 @@ static void run_inmp441_level_test(void)
 
 /* ---- 功放静音 ---- */
 
-/* 拉低 MAX98357A 的 SD 引脚，防止上电瞬间杂音 */
+/** 在系统启动早期拉低 MAX98357A 的 SD 引脚，防止上电瞬间喇叭发出 POP 声或嗡嗡声 */
 static void mute_max98357a_early(void)
 {
     gpio_reset_pin(MAX98357A_TEST_SD_GPIO);
@@ -167,29 +183,19 @@ static const speech_uploader_config_t s_speech_config = {
     .data_in_gpio = INMP441_TEST_DIN_GPIO, .sample_rate_hz = BSP_INMP441_DEFAULT_SAMPLE_RATE_HZ,
 };
 
-static void speech_upload_phase_changed(speech_uploader_phase_t phase, void *user_ctx)
-{
-    (void)user_ctx;
-    const display_activity_t activity = phase == SPEECH_UPLOADER_PHASE_RECORDING
-                                            ? DISPLAY_ACTIVITY_LISTENING
-                                            : DISPLAY_ACTIVITY_PROCESSING;
-    esp_err_t ret = DisplayController_SetActivity(activity);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "display activity update failed: %s", esp_err_to_name(ret));
-    }
-}
-
 static void init_inmp441_upload_test(void)
 {
     esp_err_t ret = SpeechUploader_Init(&s_speech_config);
     if (ret != ESP_OK) { ESP_LOGW(TAG, "SpeechUploader init failed: %s", esp_err_to_name(ret)); return; }
-    SpeechUploader_SetPhaseCallback(speech_upload_phase_changed, NULL);
     s_speech_upload_ready = true;
-    ESP_LOGI(TAG, "speech upload test ready, long-press OK key (GPIO7) 3s to record and upload");
+    ESP_LOGI(TAG, "speech upload test ready, press GPIO17 record key to upload a short WAV");
 }
 
 #if ENABLE_MAX98357A_UPLOAD_OK_PROMPT
-/* 录音上传成功后的提示音播报：云端 TTS → 失败回退本地人声 */
+/**
+ * 录音上传成功后的提示音播报：
+ * 优先尝试云端动态 TTS 回复音频 → 失败则回退到本地固定中文人声"我听到了"
+ */
 static esp_err_t play_upload_ok_prompt(void)
 {
     const bsp_max98357a_config_t amp_config = {
@@ -198,18 +204,15 @@ static esp_err_t play_upload_ok_prompt(void)
         .sample_rate_hz = BSP_MAX98357A_DEFAULT_SAMPLE_RATE_HZ,
     };
 
-    DisplayController_SetActivity(DISPLAY_ACTIVITY_SPEAKING);
     esp_err_t ret = SpeechReplyPlayer_PlayLatest(&amp_config);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "dynamic reply playback failed, fallback to local prompt: %s", esp_err_to_name(ret));
-        ret = VoicePrompt_PlayUploadOk(&amp_config);  /* 回退到本地"我听到了" */
-    }
-    DisplayController_SetActivity(DISPLAY_ACTIVITY_NONE);
-    return ret;
+    if (ret == ESP_OK) { return ESP_OK; }  /* 云端 TTS 播放成功 */
+
+    ESP_LOGW(TAG, "dynamic reply playback failed, fallback to local prompt: %s", esp_err_to_name(ret));
+    return VoicePrompt_PlayUploadOk(&amp_config);  /* 回退到本地"我听到了" */
 }
 #endif
 
-/* 播放状态播报音频。INMP441 和 MAX98357A 共享 I2S，必须先释放麦克风再播放。 */
+/* 播放状态播报音频（云端 TTS 生成的状态过渡语音） */
 static esp_err_t play_state_voice_prompt(const char *event_key)
 {
     if (event_key == NULL || event_key[0] == '\0') { return ESP_ERR_INVALID_ARG; }
@@ -221,30 +224,7 @@ static esp_err_t play_state_voice_prompt(const char *event_key)
     };
 
     ESP_LOGI(TAG, "play state voice prompt event_key=%s", event_key);
-
-    /* 如果 INMP441 正在占用 I2S，先释放，播放完再恢复 */
-    bool need_reinit_mic = false;
-#if ENABLE_INMP441_UPLOAD_TEST
-    if (s_speech_upload_ready) {
-        ESP_LOGI(TAG, "state voice: release INMP441 I2S for speaker playback");
-        s_speech_upload_ready = false;
-        SpeechUploader_Deinit();
-        need_reinit_mic = true;
-    }
-#endif
-
-    DisplayController_SetActivity(DISPLAY_ACTIVITY_SPEAKING);
-    esp_err_t ret = SpeechReplyPlayer_PlayEventKey(&amp_config, event_key);
-    DisplayController_SetActivity(DISPLAY_ACTIVITY_NONE);
-
-#if ENABLE_INMP441_UPLOAD_TEST
-    if (need_reinit_mic) {
-        init_inmp441_upload_test();
-        ESP_LOGI(TAG, "state voice: INMP441 I2S restored");
-    }
-#endif
-
-    return ret;
+    return SpeechReplyPlayer_PlayEventKey(&amp_config, event_key);
 }
 
 /** 消费 AppController 产生的待播报状态语音事件 */
@@ -258,7 +238,9 @@ static void service_pending_state_voice_prompt(void)
 }
 
 /**
- * 语音上传周期服务：3 秒长按 → 录制 WAV → HTTP POST ASR → 半双工播放提示音
+ * 语音上传测试的周期性服务函数：
+ * 检测 GPIO17 录音键 → 录制 3 秒 WAV → HTTP POST 到云端 ASR
+ * → 半双工切换到 MAX98357A → 播放云端或本地提示音 → 恢复录音链路
  */
 static void service_inmp441_upload_test(void)
 {
@@ -269,13 +251,9 @@ static void service_inmp441_upload_test(void)
     if (ret != ESP_OK) { ESP_LOGW(TAG, "record key check failed: %s", esp_err_to_name(ret)); return; }
     if (!record_requested) { return; }
 
-    ESP_LOGI(TAG, "record key long-press triggered, record and upload speech");
+    ESP_LOGI(TAG, "record key pressed, record and upload speech");
     ret = SpeechUploader_RecordWavAndUpload(INMP441_UPLOAD_RECORD_MS);
-    if (ret != ESP_OK) {
-        DisplayController_SetActivity(DISPLAY_ACTIVITY_NONE);
-        ESP_LOGW(TAG, "speech upload test failed: %s", esp_err_to_name(ret));
-        return;
-    }
+    if (ret != ESP_OK) { ESP_LOGW(TAG, "speech upload test failed: %s", esp_err_to_name(ret)); return; }
 
 #if ENABLE_MAX98357A_UPLOAD_OK_PROMPT
     /* 半双工切换：释放 INMP441 I2S RX → 播放提示音 → 恢复 INMP441 */
@@ -283,7 +261,6 @@ static void service_inmp441_upload_test(void)
     s_speech_upload_ready = false;
     ret = SpeechUploader_Deinit();
     if (ret != ESP_OK) {
-        DisplayController_SetActivity(DISPLAY_ACTIVITY_NONE);
         ESP_LOGW(TAG, "SpeechUploader deinit failed, skip speaker prompt: %s", esp_err_to_name(ret));
         init_inmp441_upload_test();
         return;
@@ -293,8 +270,6 @@ static void service_inmp441_upload_test(void)
     if (ret != ESP_OK) { ESP_LOGW(TAG, "upload ok prompt failed: %s", esp_err_to_name(ret)); }
 
     init_inmp441_upload_test();  /* 恢复录音链路 */
-#else
-    DisplayController_SetActivity(DISPLAY_ACTIVITY_NONE);
 #endif
 }
 #endif
@@ -340,76 +315,81 @@ static esp_err_t prepare_connectivity_primitives(void)
 
 /*
  * ================================================================
- * Agent 设备命令处理
+ * 系统总架构说明
+ *
+ * 这份工程按 "main → Middlewares → BSP" 三层来组织。
+ * 读代码时建议也按这个顺序往下看，因为控制权就是这样一层层往下分发的。
+ *
+ * 1. 顶层 main
+ *    `app_main()` 只做总调度，不直接碰具体硬件。
+ *    它负责：
+ *    - 按顺序初始化所有中间层模块
+ *    - 周期性拉取一次完整传感器快照
+ *    - 把快照送给风险判断模块
+ *    - 把风险结果送给应用状态机
+ *    - 再把状态同步给事件日志和显示模块
+ *    - 在两次采样之间，持续处理按键和声光提醒刷新
+ *
+ * 2. 中间件层
+ *    这一层负责"业务编排"，把多个底层硬件能力组合成可用的系统行为。
+ *
+ *    - SensorHub：统一管理 AHT20/BH1750/MQ2/LD2410B
+ *    - RiskEngine：根据传感器数据和上下文做风险判定
+ *    - AppController：状态机核心，管理 NORMAL/REMIND/ALARM/SOS
+ *    - AlertController：状态→声光提醒的翻译器
+ *    - InputController：确认键/SOS键/录音键事件封装
+ *    - DisplayController：LVGL TFT 界面渲染
+ *    - EventLog：异常事件环形缓冲区
+ *    - WiFiManager：Wi-Fi + BLE配网 + SNTP 授时
+ *    - HttpAlertReporter：HTTP POST JSON 到腾讯云
+ *    - RainMakerReporter：ESP RainMaker 备选上报
+ *    - SpeechUploader：INMP441 录音 + WAV 上传 ASR
+ *    - SpeechReplyPlayer：云端 TTS WAV 下载 + MAX98357A 播放
+ *    - VoicePrompt：本地固定 PCM 语音
+ *
+ * 3. BSP 底层
+ *    这一层直接操作具体硬件，是"设备驱动适配层"。
+ *
+ *    - BSP_I2C：共享 I2C 总线
+ *    - BSP_AHT20/BSP_BH1750：I2C 传感器
+ *    - BSP_MQ2：ADC 烟雾/气体采样
+ *    - BSP_LD2410B：毫米波人体存在 UART 驱动
+ *    - BSP_INMP441：I2S MEMS 麦克风驱动
+ *    - BSP_MAX98357A：I2S D类功放驱动
+ *    - BSP_Alert：LED + 蜂鸣器输出
+ *    - BSP_OLED：SSD1306 备选显示
+ *    - BSP_TFT：ST7735 SPI 彩屏
+ *    - KEY：按键扫描与中断事件
+ *
+ * 4. 一次完整主循环的控制流
+ *    app_main() 外层 while(1) 每约 2 秒执行：
+ *    1) SensorHub_Read()          → 采集一帧完整传感器数据
+ *    2) AppController_UpdateContext() → 更新活动/休息上下文
+ *    3) RiskEngine_Evaluate()     → 计算当前风险等级与原因
+ *    4) AppController_Process()   → 根据风险结果更新状态机
+ *    5) EventLog_Update()         → 异常状态记录
+ *    6) HttpAlertReporter_Process() → 云端上报
+ *    7) DisplayController_Update() → 刷新 TFT 显示
+ *    8) 内层 20×100ms 服务循环：
+ *       - 检测确认键长按 8s（重置 Wi-Fi）
+ *       - AppController_Service()（按键/超时/冷却处理）
+ *       - 消费状态播报语音事件
+ *       - DisplayController_Service(100)（推进 LVGL）
+ *       - 语音上传测试服务
+ *
+ * 5. 状态优先级
+ *    SOS > ALARM > REMIND > NORMAL
+ *
+ * 6. 为什么分成"外层 2s 采样 + 内层 100ms 服务"
+ *    - 外层采样周期负责环境感知，不需要太快（温度/光照变化很慢）
+ *    - 内层服务周期负责交互响应，必须更及时（按键要立即响应）
+ *    这样既能控制采样节奏，又能保证按键和提醒模式切换不迟钝。
  * ================================================================
  */
-static void service_agent_commands(void)
-{
-    device_command_t cmds[HTTP_ALERT_REPORTER_MAX_COMMANDS] = {0};
-    uint32_t count = HttpAlertReporter_TakePendingCommands(cmds, HTTP_ALERT_REPORTER_MAX_COMMANDS);
-    if (count == 0U) {
-        return;
-    }
-
-    for (uint32_t i = 0; i < count; ++i) {
-        const device_command_t *cmd = &cmds[i];
-        switch (cmd->type) {
-        case DEVICE_CMD_CONFIRM_ALERT:
-            ESP_LOGI(TAG, "agent command: confirm_alert");
-            AppController_RemoteConfirm();
-            break;
-
-        case DEVICE_CMD_SHOW_SCREEN_MESSAGE:
-            ESP_LOGI(TAG, "agent command: show_screen_message msg=%s dur=%d",
-                     cmd->message, cmd->duration);
-            DisplayController_ShowMessage(cmd->message,
-                                          cmd->duration > 0 ? cmd->duration : 5);
-            break;
-
-        case DEVICE_CMD_BEEP_ONCE:
-            ESP_LOGI(TAG, "agent command: beep_once");
-            AlertController_BeepOnce();
-            break;
-
-        case DEVICE_CMD_PLAY_TTS:
-            ESP_LOGI(TAG, "agent command: play_tts url=%s (logged, playback deferred)",
-                     cmd->url);
-            /* TTS 播放需要 I2S 半双工切换，复杂场景留待后续实现 */
-            break;
-
-        case DEVICE_CMD_SET_RUN_MODE:
-            ESP_LOGI(TAG, "agent command: set_run_mode mode=%s",
-                     cmd->run_mode ? "REAL" : "DEMO");
-            AppController_SetRunMode(cmd->run_mode ? RISK_RUN_MODE_REAL : RISK_RUN_MODE_DEMO);
-            break;
-
-        default:
-            ESP_LOGW(TAG, "agent command: unknown type=%d", (int)cmd->type);
-            break;
-        }
-    }
-}
-
-/*
- * ================================================================
- * 独立声光闪烁任务
- * 主循环播放语音时会阻塞，此任务保证 LED/蜂鸣器持续闪烁。
- * ================================================================
- */
-static void alert_blink_task(void *arg)
-{
-    (void)arg;
-    while (1) {
-        AlertController_Update();
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-}
-
-/* 主循环：2s 采样周期 + 20×100ms 服务循环。状态优先级 SOS > ALARM > REMIND > NORMAL */
 
 void app_main(void)
 {
-    /* 独立测试模式入口 */
+    /* 独立测试模式：如果编译时打开了测试宏，直接进入测试入口不跑主业务 */
 #if ENABLE_LD2410B_UART_TEST
     run_ld2410b_uart_test();
     return;
@@ -419,32 +399,32 @@ void app_main(void)
     return;
 #endif
 
-    /* 拉低功放 SD 引脚，防止上电杂音 */
+    /* 最早做的事：拉低功放 SD 引脚，防止上电瞬间杂音 */
     mute_max98357a_early();
 
 #if ENABLE_MAX98357A_OUTPUT_TEST
     run_max98357a_output_test();
 #endif
 
-    /* ====== 初始化阶段（按依赖顺序）====== */
+    /* ====== 初始化阶段（按依赖顺序，共 9 步）====== */
 
-    /* 1. 传感器中枢 */
+    /* 第 1 步：传感器中枢——初始化所有数据采集链路（I2C/AHT20/BH1750/MQ2/LD2410B） */
     esp_err_t ret = SensorHub_Init();
     if (ret != ESP_OK) { ESP_LOGE(TAG, "SensorHub init failed: %s", esp_err_to_name(ret)); return; }
 
-    /* 2. 声光提醒 */
+    /* 第 2 步：声光提醒——初始化 LED + 蜂鸣器 */
     ret = AlertController_Init();
     if (ret != ESP_OK) { ESP_LOGE(TAG, "AlertController init failed: %s", esp_err_to_name(ret)); return; }
 
-    /* 3. 用户输入 */
+    /* 第 3 步：用户输入——初始化确认键/SOS键/录音键 */
     ret = InputController_Init();
     if (ret != ESP_OK) { ESP_LOGE(TAG, "InputController init failed: %s", esp_err_to_name(ret)); return; }
 
-    /* 4. TFT 显示（失败不阻塞主流程） */
+    /* 第 4 步：TFT 显示（失败不阻塞主流程，只是没有屏幕输出） */
     ret = DisplayController_Init();
     if (ret != ESP_OK) { ESP_LOGW(TAG, "DisplayController init skipped: %s", esp_err_to_name(ret)); }
 
-    /* 5. 联网基础 + Wi-Fi + RainMaker（失败不阻塞本地闭环） */
+    /* 第 5 步：联网基础 + Wi-Fi + RainMaker（失败不阻塞本地闭环） */
     ret = prepare_connectivity_primitives();
     if (ret != ESP_OK) { ESP_LOGE(TAG, "Connectivity primitives init failed: %s", esp_err_to_name(ret)); return; }
 
@@ -454,26 +434,22 @@ void app_main(void)
     ret = WiFiManager_Init();
     if (ret != ESP_OK) { ESP_LOGW(TAG, "WiFiManager init failed: %s", esp_err_to_name(ret)); }
 
-    /* 6. 应用状态机 */
+    /* 第 6 步：应用状态机——系统从 NORMAL 状态起步 */
     ret = AppController_Init();
     if (ret != ESP_OK) { ESP_LOGE(TAG, "AppController init failed: %s", esp_err_to_name(ret)); return; }
 
-    /* 7. 事件日志 */
+    /* 第 7 步：事件日志——准备记录异常事件 */
     ret = EventLog_Init();
     if (ret != ESP_OK) { ESP_LOGE(TAG, "EventLog init failed: %s", esp_err_to_name(ret)); return; }
 
-    /* 8. HTTP 上报 */
+    /* 第 8 步：HTTP 上报——初始化设备 ID 和上报状态 */
     ret = HttpAlertReporter_Init();
     if (ret != ESP_OK) { ESP_LOGW(TAG, "HttpAlertReporter init failed: %s", esp_err_to_name(ret)); }
 
-    /* 9. 语音上传 */
+    /* 第 9 步：语音上传测试（如果编译时开启） */
 #if ENABLE_INMP441_UPLOAD_TEST
     init_inmp441_upload_test();
 #endif
-
-    /* 启动独立声光闪烁任务 */
-    xTaskCreate(alert_blink_task, "alert_blink", 2048, NULL, 5, NULL);
-    ESP_LOGI(TAG, "alert blink task started (50ms interval)");
 
     /* ====== 主业务循环 ====== */
     while (1) {
@@ -481,11 +457,11 @@ void app_main(void)
         risk_result_t risk_result = {0};
         risk_context_t risk_context = {0};
 
-        /* ---- 外层：2 秒采样周期 ---- */
+        /* ---- 外层：2 秒一个完整采样周期 ---- */
 
         ret = SensorHub_Read(&sensor_data);
         if (ret == ESP_OK) {
-            /* A. 更新上下文 */
+            /* A. 更新上下文（活动时间、休息判断、距离追踪） */
             ret = AppController_UpdateContext(&sensor_data);
             if (ret != ESP_OK) { ESP_LOGE(TAG, "AppController context update failed: %s", esp_err_to_name(ret)); }
 
@@ -495,68 +471,64 @@ void app_main(void)
             risk_context.manual_sos_active = AppController_IsSosLatched();
             risk_context.remind_timeout_active = AppController_IsRemindTimeoutLatched();
             risk_context.rest_context_active = AppController_IsRestContextActive();
-            risk_context.fall_detected = AppController_IsFallDetected();
 
-            /* C. 风险评估 */
+            /* C. 风险评估：把传感器数据 + 上下文 → 风险结论 */
             RiskEngine_Evaluate(&sensor_data, &risk_context, &risk_result);
 
-            /* D. 状态机推进 */
+            /* D. 状态机推进：根据风险结论更新 NORMAL/REMIND/ALARM/SOS */
             ret = AppController_Process(&sensor_data, &risk_result);
             if (ret != ESP_OK) { ESP_LOGE(TAG, "AppController process failed: %s", esp_err_to_name(ret)); }
 
-            /* E. 事件日志 */
+            /* E. 事件日志：异常状态变化时记录现场快照 */
             ret = EventLog_Update(AppController_GetState(), &sensor_data, &risk_result);
             if (ret != ESP_OK) { ESP_LOGE(TAG, "EventLog update failed: %s", esp_err_to_name(ret)); }
 
-            /* F. HTTP 云端上报 */
+            /* F. HTTP 云端上报（事件 + 周期遥测） */
             ret = HttpAlertReporter_Process(AppController_GetState(), &sensor_data, &risk_result);
             if (ret != ESP_OK) { ESP_LOGW(TAG, "HttpAlertReporter process failed: %s", esp_err_to_name(ret)); }
 
-            /* F2. Agent 设备命令 */
-            service_agent_commands();
-
-            /* G. RainMaker 上报 */
+            /* G. RainMaker 上报（备选路线） */
             ret = RainMakerReporter_Process(AppController_GetState(), &sensor_data, &risk_result);
             if (ret != ESP_OK) { ESP_LOGW(TAG, "RainMakerReporter process failed: %s", esp_err_to_name(ret)); }
 
-            /* H. 更新 TFT 显示 */
+            /* H. 更新 TFT 显示：始终根据最终状态来刷新 */
             ret = DisplayController_Update(AppController_GetState(), &sensor_data, &risk_result);
             if (ret != ESP_OK) { ESP_LOGW(TAG, "DisplayController update failed: %s", esp_err_to_name(ret)); }
 
-            /* I. 状态播报语音 */
+            /* I. 消费状态播报语音事件 */
             service_pending_state_voice_prompt();
         } else {
             ESP_LOGE(TAG, "SensorHub read failed: %s", esp_err_to_name(ret));
         }
 
-        /* ---- 内层：20 × 100ms ≈ 2s 服务循环 ---- */
+        /* ---- 内层：20 × 100ms ≈ 2s 高频服务循环 ---- */
         for (int i = 0; i < 20; ++i) {
-            /* 确认键长按 30 秒 → 清除配网并重启 */
+            /* 检测确认键长按 8 秒 → 清除 Wi-Fi 配网信息并重启 */
             bool reset_wifi_requested = false;
             ret = InputController_GetConfirmLongPressEvent(&reset_wifi_requested);
             if (ret == ESP_OK && reset_wifi_requested) {
-                ESP_LOGW(TAG, "confirm key held for 30s, reset Wi-Fi provisioning");
+                ESP_LOGW(TAG, "confirm key held for 8s, reset Wi-Fi provisioning");
                 ret = WiFiManager_ResetProvisioningAndRestart();
                 if (ret != ESP_OK) { ESP_LOGE(TAG, "Wi-Fi provisioning reset failed: %s", esp_err_to_name(ret)); }
             } else if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "Confirm long press check failed: %s", esp_err_to_name(ret));
             }
 
-            /* 状态机服务（按键、超时升级、冷却计时） */
+            /* 状态机高频服务（按键处理、超时升级、冷却计时、声光刷新） */
             ret = AppController_Service();
             if (ret != ESP_OK) { ESP_LOGE(TAG, "AppController service failed: %s", esp_err_to_name(ret)); }
 
-            /* 检查状态语音播报 */
+            /* 再次检查有无状态的语音播报要播放 */
             service_pending_state_voice_prompt();
 
-            /* LVGL tick */
+            /* 推进 LVGL tick（100ms） */
             ret = DisplayController_Service(100);
             if (ret != ESP_OK) { ESP_LOGW(TAG, "DisplayController service failed: %s", esp_err_to_name(ret)); }
 
 #if ENABLE_INMP441_UPLOAD_TEST
             service_inmp441_upload_test();
 #endif
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(100));  /* 精确延时 100ms */
         }
     }
 }

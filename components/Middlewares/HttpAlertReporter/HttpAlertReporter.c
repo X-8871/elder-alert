@@ -17,7 +17,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "WiFiManager.h"
-#include "cJSON.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -30,7 +29,6 @@
 #define HTTP_ALERT_REPORTER_MAX_ESCAPED_REASON_LEN 384
 #define HTTP_ALERT_REPORTER_MAX_DEVICE_ID_LEN 18
 #define HTTP_ALERT_REPORTER_REQUEST_BUFFER_LEN 1536
-#define HTTP_ALERT_REPORTER_RESPONSE_BUFFER_LEN 2048
 
 static const char *TAG = "HttpAlertReporter";
 
@@ -41,10 +39,6 @@ static app_state_t s_last_handled_state = APP_STATE_NORMAL;
 static char s_last_handled_reason[HTTP_ALERT_REPORTER_MAX_REASON_LEN] = {0};
 static uint32_t s_last_handled_sos_trigger_count = 0;
 static uint32_t s_last_report_attempt_ms = 0;
-
-/* 服务器下发的设备命令缓存 */
-static device_command_t s_pending_commands[HTTP_ALERT_REPORTER_MAX_COMMANDS] = {0};
-static uint32_t s_pending_command_count = 0;
 
 typedef enum {
     REPORT_MODE_NONE = 0,
@@ -175,19 +169,19 @@ static bool json_escape_string(const char *input, char *output, size_t output_si
 
 static const char *run_mode_string(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL ? "REAL" : "DEMO";
+    return RISK_ENGINE_RUN_MODE == RISK_RUN_MODE_REAL ? "REAL" : "DEMO";
 }
 
 static uint32_t remind_confirm_timeout_ms(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return RISK_ENGINE_RUN_MODE == RISK_RUN_MODE_REAL
                ? APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_REAL
                : APP_CONTROLLER_REMIND_CONFIRM_TIMEOUT_MS_DEMO;
 }
 
 static uint32_t no_motion_remind_ms(void)
 {
-    return RiskEngine_GetRunMode() == RISK_RUN_MODE_REAL
+    return RISK_ENGINE_RUN_MODE == RISK_RUN_MODE_REAL
                ? (5U * 60U * 1000U)
                : RISK_ENGINE_NO_MOTION_REMIND_MS;
 }
@@ -219,9 +213,7 @@ static report_mode_t get_report_mode(app_state_t state,
 
 static esp_err_t post_alert_json(const char *json_payload,
                                  report_mode_t report_mode,
-                                 int *status_code,
-                                 char *response_buf,
-                                 size_t response_buf_size)
+                                 int *status_code)
 {
     esp_http_client_config_t config = {
         .url = HTTP_ALERT_REPORTER_URL,
@@ -243,126 +235,19 @@ static esp_err_t post_alert_json(const char *json_payload,
     if (ret == ESP_OK && strlen(HTTP_ALERT_REPORTER_DEVICE_TOKEN) > 0U) {
         ret = esp_http_client_set_header(client, "X-Device-Token", HTTP_ALERT_REPORTER_DEVICE_TOKEN);
     }
-
-    int post_len = (int)strlen(json_payload);
     if (ret == ESP_OK) {
-        ret = esp_http_client_open(client, post_len);
+        ret = esp_http_client_set_post_field(client, json_payload, (int)strlen(json_payload));
     }
-    if (ret != ESP_OK) {
-        esp_http_client_cleanup(client);
-        return ret;
+    if (ret == ESP_OK) {
+        ret = esp_http_client_perform(client);
     }
-
-    int written = esp_http_client_write(client, json_payload, post_len);
-    if (written < 0) {
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return ESP_FAIL;
-    }
-
-    int content_length = esp_http_client_fetch_headers(client);
-    (void)content_length; /* chunked encoding 时可能为 -1 */
 
     if (status_code != NULL) {
-        *status_code = esp_http_client_get_status_code(client);
+        *status_code = ret == ESP_OK ? esp_http_client_get_status_code(client) : -1;
     }
 
-    /* 读取响应体 */
-    if (response_buf != NULL && response_buf_size > 1U) {
-        int total_read = 0;
-        int read_len = 0;
-        while (total_read < (int)response_buf_size - 1) {
-            read_len = esp_http_client_read(client,
-                                            response_buf + total_read,
-                                            (int)response_buf_size - 1 - total_read);
-            if (read_len <= 0) {
-                break;
-            }
-            total_read += read_len;
-        }
-        response_buf[total_read] = '\0';
-    }
-
-    esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    return ESP_OK;
-}
-
-/* 解析服务器响应中的 commands 数组，缓存设备命令 */
-static void parse_commands_from_response(const char *response_body)
-{
-    if (response_body == NULL || response_body[0] == '\0') {
-        return;
-    }
-
-    cJSON *root = cJSON_Parse(response_body);
-    if (root == NULL) {
-        return;
-    }
-
-    cJSON *commands = cJSON_GetObjectItem(root, "commands");
-    if (commands == NULL || !cJSON_IsArray(commands)) {
-        cJSON_Delete(root);
-        return;
-    }
-
-    int array_size = cJSON_GetArraySize(commands);
-    for (int i = 0; i < array_size && s_pending_command_count < HTTP_ALERT_REPORTER_MAX_COMMANDS; ++i) {
-        cJSON *cmd = cJSON_GetArrayItem(commands, i);
-        if (cmd == NULL || !cJSON_IsObject(cmd)) {
-            continue;
-        }
-
-        cJSON *type_item = cJSON_GetObjectItem(cmd, "type");
-        if (type_item == NULL || !cJSON_IsString(type_item)) {
-            continue;
-        }
-
-        const char *type_str = type_item->valuestring;
-        device_command_t *out = &s_pending_commands[s_pending_command_count];
-        memset(out, 0, sizeof(*out));
-
-        if (strcmp(type_str, "confirm_alert") == 0) {
-            out->type = DEVICE_CMD_CONFIRM_ALERT;
-        } else if (strcmp(type_str, "show_screen_message") == 0) {
-            out->type = DEVICE_CMD_SHOW_SCREEN_MESSAGE;
-            cJSON *msg = cJSON_GetObjectItem(cmd, "message");
-            if (msg != NULL && cJSON_IsString(msg)) {
-                strncpy(out->message, msg->valuestring, sizeof(out->message) - 1U);
-            }
-            cJSON *dur = cJSON_GetObjectItem(cmd, "duration");
-            if (dur != NULL && cJSON_IsNumber(dur)) {
-                out->duration = dur->valueint;
-            } else {
-                out->duration = 5;
-            }
-        } else if (strcmp(type_str, "beep_once") == 0) {
-            out->type = DEVICE_CMD_BEEP_ONCE;
-        } else if (strcmp(type_str, "play_tts") == 0) {
-            out->type = DEVICE_CMD_PLAY_TTS;
-            cJSON *url = cJSON_GetObjectItem(cmd, "url");
-            if (url != NULL && cJSON_IsString(url)) {
-                strncpy(out->url, url->valuestring, sizeof(out->url) - 1U);
-            }
-        } else if (strcmp(type_str, "set_run_mode") == 0) {
-            out->type = DEVICE_CMD_SET_RUN_MODE;
-            cJSON *mode_item = cJSON_GetObjectItem(cmd, "mode");
-            if (mode_item != NULL && cJSON_IsString(mode_item)) {
-                out->run_mode = (strcmp(mode_item->valuestring, "REAL") == 0) ? 1 : 0;
-            } else if (mode_item != NULL && cJSON_IsNumber(mode_item)) {
-                out->run_mode = (mode_item->valueint != 0) ? 1 : 0;
-            } else {
-                out->run_mode = 0; /* 默认 DEMO */
-            }
-        } else {
-            continue; /* 未知命令类型，跳过 */
-        }
-
-        s_pending_command_count++;
-        ESP_LOGI(TAG, "parsed command[%u] type=%d", s_pending_command_count - 1U, (int)out->type);
-    }
-
-    cJSON_Delete(root);
+    return ret;
 }
 
 esp_err_t HttpAlertReporter_Init(void)
@@ -475,9 +360,7 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
     }
 
     int status_code = -1;
-    char response_buf[HTTP_ALERT_REPORTER_RESPONSE_BUFFER_LEN] = {0};
-    ret = post_alert_json(request_body, report_mode, &status_code,
-                          response_buf, sizeof(response_buf));
+    ret = post_alert_json(request_body, report_mode, &status_code);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG,
                  "report failed mode=%s state=%s err=%s",
@@ -496,35 +379,11 @@ esp_err_t HttpAlertReporter_Process(app_state_t state,
         return ESP_OK;
     }
 
-    /* 解析服务器下发的设备命令 */
-    if (response_buf[0] != '\0') {
-        parse_commands_from_response(response_buf);
-    }
-
     ESP_LOGI(TAG,
-             "report sent mode=%s state=%s risk=%s url=%s commands=%u",
+             "report sent mode=%s state=%s risk=%s url=%s",
              report_mode == REPORT_MODE_EVENT ? "event" : "telemetry",
              AppController_StateToString(state),
              RiskEngine_LevelToString(risk_result->level),
-             HTTP_ALERT_REPORTER_URL,
-             s_pending_command_count);
+             HTTP_ALERT_REPORTER_URL);
     return ESP_OK;
-}
-
-uint32_t HttpAlertReporter_TakePendingCommands(device_command_t *out_commands,
-                                                uint32_t max_count)
-{
-    if (out_commands == NULL || max_count == 0U) {
-        return 0U;
-    }
-
-    uint32_t count = (s_pending_command_count < max_count)
-                         ? s_pending_command_count
-                         : max_count;
-    if (count > 0U) {
-        memcpy(out_commands, s_pending_commands, count * sizeof(device_command_t));
-        s_pending_command_count = 0U;
-        memset(s_pending_commands, 0, sizeof(s_pending_commands));
-    }
-    return count;
 }

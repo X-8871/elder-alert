@@ -1,10 +1,21 @@
 /*
  * WiFiManager —— Wi-Fi 联网管理模块
  *
- * BLE 配网 + Wi-Fi STA 连接，7 态状态机（事件驱动）：
+ * 本模块封装了 ESP32 从"零"到"拿到 IP"的完整联网链路：
+ *   BLE 配网 → NVS 保存凭据 → Wi-Fi STA 连接路由器 → DHCP 获取 IP
+ *
+ * 设计核心是 7 态状态机（事件驱动）：
  *   IDLE → PROVISIONING → CONNECTING → CONNECTED
  *                                   ↘ RECONNECTING → CONNECTED
  *                                   ↘ FAILED
+ *
+ * 上层模块（如 AppController）只需调用 WiFiManager_IsConnected() 判断网络是否可用，
+ * 无需关心配网、连 Wi-Fi、DHCP、重连等底层细节。
+ *
+ * 安全说明：
+ *   - BLE 配网使用 PoP（Proof of Possession）做身份校验，防止陌生人乱配网
+ *   - 凭据通过 NVS 持久化存储，断电重启后自动重连，无需重新配网
+ *   - WiFiManager_ResetProvisioningAndRestart() 会清除 NVS 中的凭据并重启
  */
 #pragma once
 
@@ -12,7 +23,16 @@
 
 #include "esp_err.h"
 
-/* 联网状态枚举 */
+/*
+ * 联网状态枚举 —— 7 个平级状态，设备同一时刻只处于其中一个
+ *
+ * 典型流转路径：
+ *   上电 → IDLE → PROVISIONING（首次，走 BLE 配网）
+ *        → IDLE → CONNECTING（已配过网，直接连）
+ *        → CONNECTING → CONNECTED（拿到 IP）
+ *        → CONNECTED → RECONNECTING（断线自动重连）
+ *        → RECONNECTING → CONNECTED（重连成功）
+ */
 typedef enum {
     WIFI_MANAGER_STATE_IDLE = 0,          /* 空闲：初始化前的默认状态 */
     WIFI_MANAGER_STATE_PROVISIONING,      /* 配网中：BLE 广播等待手机发送 Wi-Fi 凭据 */
@@ -24,12 +44,18 @@ typedef enum {
 } wifi_manager_state_t;
 
 /*
- * 初始化 WiFiManager。
+ * 初始化 WiFiManager，完成从 NVS 到事件注册的 6 层初始化，
+ * 然后根据"是否已配过网"决定走 BLE 配网还是直接连 Wi-Fi。
  * 幂等：重复调用直接返回 ESP_OK。
  */
 esp_err_t WiFiManager_Init(void);
 
-/* 清除 NVS 中保存的 Wi-Fi 凭据并重启设备。 */
+/*
+ * 清除 NVS 中保存的 Wi-Fi 凭据并重启设备。
+ * 重启后 network_prov_mgr_is_wifi_provisioned() 返回 false，
+ * 设备将重新进入 BLE 配网流程。
+ * 典型触发场景：用户长按确认键 8 秒。
+ */
 esp_err_t WiFiManager_ResetProvisioningAndRestart(void);
 
 /* 获取当前联网状态原始枚举值 */

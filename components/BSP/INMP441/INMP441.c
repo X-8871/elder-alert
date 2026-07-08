@@ -1,26 +1,32 @@
 /**
  * @file INMP441.c
  * @brief INMP441 I2S 数字 MEMS 麦克风 BSP 驱动实现。
+ *
+ * 【学弟必读：I2S 在 ESP-IDF 中的使用】
+ * ESP-IDF 5.x 使用 "channel" 的概念来管理 I2S：
+ * - `i2s_new_channel()` → 创建 I2S 通道（RX 接收 或 TX 发送）
+ * - `i2s_channel_init_std_mode()` → 设置为标准 I2S 模式（Philips 格式）
+ * - `i2s_channel_enable()` → 启动通道
+ * - `i2s_channel_read()` → 从 RX 通道读取采样数据
+ *
+ * 【关键配置：slot_mask = I2S_STD_SLOT_LEFT】
+ * INMP441 的 L/R 引脚接 GND，所以它只输出左声道数据。
+ * slot_mask 设为 LEFT 后，驱动只从 WS=低电平期间读取有效数据，
+ * 忽略 WS=高电平期间的无效数据。
  */
 
 #include "BSP_INMP441.h"
 
 #include <stdlib.h>
 
-#include "driver/gpio.h"
-#include "driver/i2s_std.h"
+#include "driver/i2s_std.h"  /* ESP-IDF 标准 I2S 模式 API */
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 #define BSP_INMP441_LEVEL_SAMPLE_COUNT 256U  /* 音量检测用 256 个采样 */
 
 static const char *TAG = "BSP_INMP441";
 static i2s_chan_handle_t s_rx_chan = NULL;  /* I2S 接收通道句柄 */
 static bool s_initialized = false;
-static gpio_num_t s_bclk_gpio = -1;
-static gpio_num_t s_ws_gpio = -1;
-static gpio_num_t s_din_gpio = -1;
 
 /** 求绝对值——处理 INT32_MIN 的溢出问题 */
 static int32_t abs_i32(int32_t value)
@@ -95,9 +101,6 @@ esp_err_t BSP_INMP441_Init(const bsp_inmp441_config_t *config)
     }
 
     s_initialized = true;
-    s_bclk_gpio = config->bclk_gpio;
-    s_ws_gpio = config->ws_gpio;
-    s_din_gpio = config->data_in_gpio;
     ESP_LOGI(TAG,
              "init success: bclk_gpio=%d ws_gpio=%d din_gpio=%d sample_rate=%" PRIu32,
              config->bclk_gpio, config->ws_gpio, config->data_in_gpio, config->sample_rate_hz);
@@ -115,26 +118,6 @@ esp_err_t BSP_INMP441_Deinit(void)
     esp_err_t del_ret = i2s_del_channel(s_rx_chan);
     s_rx_chan = NULL;
     s_initialized = false;
-
-    /* 关键：reset 共享 GPIO（BCLK/WS），把它们从 I2S 矩阵中释放出来。
-     * 否则下次 INMP441 或 MAX98357A Init 时，GPIO 仍处于上一个 I2S 控制器的
-     * 矩阵模式，导致时钟信号无法正确输出，麦克风读到全零。 */
-    if (s_bclk_gpio >= 0) {
-        gpio_reset_pin(s_bclk_gpio);
-    }
-    if (s_ws_gpio >= 0) {
-        gpio_reset_pin(s_ws_gpio);
-    }
-    if (s_din_gpio >= 0) {
-        gpio_reset_pin(s_din_gpio);
-    }
-
-    /* 给 GPIO 状态一个短暂的稳定时间 */
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    s_bclk_gpio = -1;
-    s_ws_gpio = -1;
-    s_din_gpio = -1;
 
     if (ret != ESP_OK) {
         return ret;

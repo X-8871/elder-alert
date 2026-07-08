@@ -2,21 +2,50 @@
  * @file TFT.c
  * @brief ST7735 1.8寸 160×128 SPI TFT 彩屏 BSP 驱动实现。
  *
- * 初始化顺序：背光 GPIO → SPI 总线 → 面板 IO → ST7789 面板驱动 → ST7735 初始化序列 → 开显示 → 开背光。
- * delay_ms == 255 为"等 500ms"的特殊标记（uint8 最大 255 无法表示 500）。
+ * 【学弟必读：ST7735 初始化流程】
+ * TFT 屏幕的初始化是一个严格的顺序过程，不能跳过任何一步：
+ *
+ * 1. **init_backlight_gpio()** — 配置背光控制引脚，默认关背光
+ * 2. **init_spi_bus()** — 初始化 SPI2 总线，配置 CLK/MOSI 引脚，开启 DMA
+ * 3. **init_panel_io()** — 创建 LCD 面板 IO 对象，绑定 DC/CS 引脚
+ * 4. **init_panel_driver()** — 创建 ST7789 面板驱动实例（复用 ST7789 驱动）
+ * 5. **startup_panel()** — 硬件复位 → 初始化 → 发 ST7735 专属命令 → 开显示
+ * 6. **SetBacklight(true)** — 打开背光
+ *
+ * 【ST7735 初始化序列中的每个命令是干什么的？】
+ * - SWRESET (0x01)：软件复位
+ * - SLPOUT  (0x11)：退出睡眠模式
+ * - FRMCTR1/2/3 (0xB1/0xB2/0xB3)：帧率控制（设置刷新速度）
+ * - INVCTR  (0xB4)：显示反转控制
+ * - PWCTR1~5 (0xC0~0xC4)：电源控制（设置内部升压电路）
+ * - VMCTR1  (0xC5)：VCOM 电压控制
+ * - COLMOD  (0x3A)：颜色格式设置（RGB565 = 0x05）
+ * - GMCTRP1/0xE0, GMCTRN1/0xE1：Gamma 校正表（正/负极性的灰阶映射）
+ * - NORON   (0x13)：进入正常显示模式
+ * - DISPON  (0x29)：开显示
+ *
+ * 【Gamma 校正是什么？】
+ * 人眼对亮度的感知不是线性的——暗部变化比亮部变化更敏感。
+ * Gamma 校正通过非线性映射让颜色在屏幕上看起来更自然。
+ * GMCTRP1/0xE0 和 GMCTRN1/0xE1 分别控制正极性和负极性驱动的灰阶电压。
+ *
+ * 【delay_ms == 255 的特殊含义】
+ * ST7735 数据手册要求退出睡眠模式后至少等 500ms。
+ * 代码中用 255 作为"500ms"的标记值，因为 uint8 最大只有 255。
+ * 正常 delay 不可能是 255（ST7735 手册最大 delay 是 120ms）。
  */
 
 #include "BSP_TFT.h"
 
 #include "driver/gpio.h"
-#include "driver/spi_master.h"
+#include "driver/spi_master.h"       /* SPI 主机驱动 */
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_lcd_io_spi.h"
-#include "esp_lcd_panel_commands.h"
+#include "freertos/task.h"           /* vTaskDelay */
+#include "esp_lcd_io_spi.h"          /* SPI 接口的 LCD IO */
+#include "esp_lcd_panel_commands.h"  /* LCD 通用命令宏 */
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_st7789.h"
+#include "esp_lcd_panel_st7789.h"    /* ST7789 面板驱动（兼容 ST7735） */
 #include "esp_log.h"
 
 static const char *TAG = "BSP_TFT";
@@ -29,8 +58,8 @@ static const char *TAG = "BSP_TFT";
 #define ST7735_X_GAP                   2      /* X 方向像素偏移 */
 #define ST7735_Y_GAP                   3      /* Y 方向像素偏移 */
 #define ST7735_SWAP_XY                 true   /* X/Y 交换（物理 128×160→逻辑 160×128） */
-#define ST7735_MIRROR_X                false  /* 水平镜像（翻转180°：取反） */
-#define ST7735_MIRROR_Y                true   /* 垂直镜像（翻转180°：取反） */
+#define ST7735_MIRROR_X                true   /* 水平镜像 */
+#define ST7735_MIRROR_Y                false  /* 不垂直镜像 */
 #define ST7735_INVERT_COLOR            false  /* 不反色 */
 
 /* ---- ST7735 扩展命令码（不在 LCD 通用命令中）---- */
@@ -61,9 +90,17 @@ static esp_lcd_panel_handle_t s_panel = NULL;       /* LCD 面板驱动实例 */
 static bool s_initialized = false;
 
 /* ================================================================
- * ST7735 初始化序列
- * delay_ms 为 0 表示不等待，255 表示等 500ms。
- * ================================================================ */
+ * ST7735 初始化序列——从数据手册抄来的上电初始化命令表
+ * ================================================================
+ * 这些命令设置：
+ *   - 帧率（约 60Hz）
+ *   - 电源电压（升压到驱动 LCD 所需的电压）
+ *   - VCOM（液晶偏压，影响对比度）
+ *   - Gamma 曲线（灰阶到电压的映射）
+ *   - 颜色格式 RGB565
+ *
+ * delay_ms 为 0 表示不等待，255 表示等 500ms（uint8 最大值标记）。
+ */
 static const st7735_init_cmd_t s_st7735_init_cmds[] = {
     {LCD_CMD_SWRESET, {0}, 0, 150},  /* 软件复位，等 150ms */
     {LCD_CMD_SLPOUT,  {0}, 0, 255},  /* 退出睡眠，等 500ms（255 标记） */

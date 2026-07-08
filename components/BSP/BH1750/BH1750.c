@@ -1,17 +1,23 @@
 /**
  * @file BH1750.c
  * @brief BH1750 光照度传感器 BSP 驱动实现。
+ *
+ * 【学弟必读：BH1750 底层】
+ * 类似 AHT20，我们用了第三方的 `bh1750` 组件库，不需要自己操作 I2C 寄存器。
+ * - `bh1750_init_desc()` 创建设备描述符
+ * - `bh1750_setup()`  设置工作模式（连续高分辨率）
+ * - `bh1750_read()`   读取 lux 值
  */
 
 #include "BSP_BH1750.h"
 
-#include <string.h>
-#include "BSP_I2C.h"
-#include "bh1750.h"
+#include <string.h>    /* memset */
+#include "BSP_I2C.h"   /* 共享 I2C 总线 */
+#include "bh1750.h"    /* 第三方 BH1750 驱动库 */
 #include "esp_log.h"
 
 static const char *TAG = "BSP_BH1750";
-static i2c_dev_t s_bh1750_dev = {0};
+static i2c_dev_t s_bh1750_dev = {0};  /* 第三方 I2C 设备结构体 */
 static bool s_initialized = false;
 
 bool BSP_BH1750_IsInitialized(void)

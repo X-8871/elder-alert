@@ -1,26 +1,42 @@
 /**
  * @file MQ2.c
  * @brief MQ2 烟雾/可燃气体传感器 BSP 驱动实现——ADC 单次采集 + 自动校准。
+ *
+ * 【学弟必读：GPIO 到 ADC 通道的映射】
+ * ESP32-S3 有两个 ADC 单元（ADC1/ADC2），每个单元有多个通道。
+ * GPIO 和 ADC 通道不是随意对应的——特定的 GPIO 只能连接到特定的 ADC 通道：
+ *   GPIO1 → ADC1_CH0, GPIO2 → ADC1_CH1, ... GPIO10 → ADC1_CH9
+ * 本项目 MQ2 接 GPIO1，所以使用 ADC1_CH0。
+ *
+ * 【ADC 衰减 (Attenuation)】
+ * ESP32 ADC 默认只能测量 0~1.1V。设置衰减 DB_12（12dB）后，
+ * 量程扩展为 0~3.3V 左右（实际约 0~3100mV），这样才能测量 MQ2 的完整输出电压。
  */
 
 #include "BSP_MQ2.h"
 
 #include <stdbool.h>
 #include "esp_log.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
+#include "esp_adc/adc_oneshot.h"       /* ADC 单次转换 API */
+#include "esp_adc/adc_cali.h"          /* ADC 校准 API */
+#include "esp_adc/adc_cali_scheme.h"   /* ADC 校准方案选择 */
 
 static const char *TAG = "BSP_MQ2";
-static adc_oneshot_unit_handle_t s_adc_handle = NULL;
-static adc_cali_handle_t s_cali_handle = NULL;
-static adc_channel_t s_adc_channel = ADC_CHANNEL_0;
+static adc_oneshot_unit_handle_t s_adc_handle = NULL;  /* ADC 单元句柄——代表整个 ADC1 */
+static adc_cali_handle_t s_cali_handle = NULL;          /* ADC 校准句柄——校准数据 */
+static adc_channel_t s_adc_channel = ADC_CHANNEL_0;     /* 当前使用的 ADC 通道 */
 static bool s_initialized = false;
-static bool s_cali_enabled = false;
+static bool s_cali_enabled = false;                      /* 校准是否可用 */
 
 /**
  * @brief 将 GPIO 引脚号转换为对应的 ADC 通道编号。
- * 当前支持 GPIO1 ~ GPIO10 → ADC1_CH0 ~ ADC1_CH9
+ *
+ * 为什么需要这个函数？
+ * 因为 ESP-IDF 的 ADC API 用的是"通道号"（如 ADC_CHANNEL_0），
+ * 但硬件设计者更习惯用"引脚号"（如 GPIO1）。
+ * 这个函数完成从"引脚号 → 通道号"的翻译。
+ *
+ * 当前支持的 GPIO：GPIO1 ~ GPIO10 → ADC1_CH0 ~ ADC1_CH9
  */
 static esp_err_t mq2_gpio_to_channel(gpio_num_t analog_gpio, adc_channel_t *channel)
 {

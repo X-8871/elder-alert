@@ -13,29 +13,16 @@
 #include "WiFiManager.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 #define SPEECH_UPLOADER_URL "http://spectator0618.online:3000/api/speech/transcribe"
 #define SPEECH_UPLOADER_DEVICE_TOKEN ""
-#define SPEECH_UPLOADER_TIMEOUT_MS 45000
+#define SPEECH_UPLOADER_TIMEOUT_MS 10000
 #define SPEECH_UPLOADER_WAV_HEADER_BYTES 44U
 #define SPEECH_UPLOADER_BYTES_PER_SAMPLE 2U
-#define SPEECH_UPLOADER_WARMUP_MS         300U   /* I2S 预热：丢弃前 300ms 数据 */
-#define SPEECH_UPLOADER_SETTLE_MS         500U   /* 显示录音界面后等 500ms 让用户准备 */
 
 static const char *TAG = "SpeechUploader";
 static bool s_initialized = false;
 static uint32_t s_sample_rate_hz = BSP_INMP441_DEFAULT_SAMPLE_RATE_HZ;
-static speech_uploader_phase_callback_t s_phase_callback = NULL;
-static void *s_phase_callback_ctx = NULL;
-
-static void notify_phase(speech_uploader_phase_t phase)
-{
-    if (s_phase_callback != NULL) {
-        s_phase_callback(phase, s_phase_callback_ctx);
-    }
-}
 
 static int16_t clamp_i16(int32_t value)
 {
@@ -159,12 +146,6 @@ esp_err_t SpeechUploader_Deinit(void)
     return ret;
 }
 
-void SpeechUploader_SetPhaseCallback(speech_uploader_phase_callback_t callback, void *user_ctx)
-{
-    s_phase_callback = callback;
-    s_phase_callback_ctx = user_ctx;
-}
-
 esp_err_t SpeechUploader_RecordWavAndUpload(uint32_t record_ms)
 {
     if (!s_initialized) {
@@ -194,36 +175,7 @@ esp_err_t SpeechUploader_RecordWavAndUpload(uint32_t record_ms)
     }
 
     build_wav_header(wav_data, s_sample_rate_hz, (uint32_t)pcm_bytes);
-    notify_phase(SPEECH_UPLOADER_PHASE_RECORDING);
-
-    /* 等待 500ms 让用户看到"录音中"界面后准备开口 */
-    vTaskDelay(pdMS_TO_TICKS(SPEECH_UPLOADER_SETTLE_MS));
-
-    /* I2S 预热：读取并丢弃前 300ms 数据，避免 DMA 启动伪影 */
-    const size_t warmup_samples = ((size_t)s_sample_rate_hz * SPEECH_UPLOADER_WARMUP_MS) / 1000U;
-    size_t warmed = 0;
-    while (warmed < warmup_samples) {
-        size_t batch = BSP_INMP441_DEFAULT_DMA_FRAME_NUM;
-        if (batch > warmup_samples - warmed) {
-            batch = warmup_samples - warmed;
-        }
-        size_t read = 0;
-        esp_err_t warm_ret = BSP_INMP441_ReadSamples(samples, batch, &read, 1000);
-        if (warm_ret != ESP_OK || read == 0U) {
-            free(wav_data);
-            free(samples);
-            ESP_LOGW(TAG, "I2S warmup failed: %s", esp_err_to_name(warm_ret));
-            return ESP_FAIL;
-        }
-        warmed += read;
-    }
-    ESP_LOGI(TAG, "I2S warmup done, discarded %u samples (%ums)",
-             (unsigned)warmed, SPEECH_UPLOADER_WARMUP_MS);
-
-    /* 正式录音 */
     size_t written_samples = 0;
-    int32_t peak_abs = 0;
-    int64_t abs_sum = 0;
     while (written_samples < sample_count) {
         size_t batch_samples = BSP_INMP441_DEFAULT_DMA_FRAME_NUM;
         size_t remaining = sample_count - written_samples;
@@ -245,25 +197,15 @@ esp_err_t SpeechUploader_RecordWavAndUpload(uint32_t record_ms)
         }
 
         for (size_t i = 0; i < samples_read; ++i) {
-            int32_t raw = samples[i] >> 8;
-            int16_t pcm_sample = clamp_i16(raw);
+            int16_t pcm_sample = clamp_i16(samples[i] >> 8);
             size_t offset = SPEECH_UPLOADER_WAV_HEADER_BYTES +
                             ((written_samples + i) * SPEECH_UPLOADER_BYTES_PER_SAMPLE);
             write_u16_le(wav_data + offset, (uint16_t)pcm_sample);
-
-            int32_t a = raw < 0 ? -raw : raw;
-            if (a > peak_abs) { peak_abs = a; }
-            abs_sum += a;
         }
         written_samples += samples_read;
     }
 
-    ESP_LOGI(TAG, "recording done: samples=%u peak=%ld mean=%ld",
-             (unsigned)written_samples, (long)peak_abs,
-             (long)(abs_sum / (int64_t)written_samples));
-
     int status_code = -1;
-    notify_phase(SPEECH_UPLOADER_PHASE_UPLOADING);
     esp_err_t ret = post_wav(wav_data, wav_bytes, &status_code);
     free(wav_data);
     free(samples);

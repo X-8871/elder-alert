@@ -1,6 +1,19 @@
 /**
  * @file MAX98357A.c
  * @brief MAX98357A I2S 数字功放 BSP 驱动实现。
+ *
+ * 【学弟必读：单声道转立体声为什么需要复制？】
+ * I2S 协议按"左右声道交替"传输数据：一个 WS 周期包含 1 个左声道采样 + 1 个右声道采样。
+ * 本项目只有单声道音频，但 MAX98357A 的 I2S 输入仍然期望立体声格式。
+ * 因此每次写入时，我们把每个单声道采样复制一份到右声道：
+ *   立体声输出 = [sample_L, sample_R] = [mono_sample, mono_sample]
+ * 这样左右声道都能听到同样的声音。
+ *
+ * 【SD 引脚的控制时序】
+ * - 播放前：拉高 SD → 功放进入工作状态
+ * - 播放中：持续输出 I2S 数据
+ * - 播放后：拉低 SD → 功放关闭，消除空闲时的底噪/嗡嗡声
+ * 这就是为什么 main.c 启动早期先把 GPIO21 拉低（静音）。
  */
 
 #include "BSP_MAX98357A.h"
@@ -8,20 +21,14 @@
 #include <inttypes.h>
 #include <stdlib.h>
 
-#include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 static const char *TAG = "BSP_MAX98357A";
 static i2s_chan_handle_t s_tx_chan = NULL;  /* I2S 发送通道句柄 */
 static bool s_initialized = false;
 static uint32_t s_sample_rate_hz = BSP_MAX98357A_DEFAULT_SAMPLE_RATE_HZ;
 static gpio_num_t s_sd_gpio = -1;           /* SD 引脚，-1 表示未使用 */
-static gpio_num_t s_bclk_gpio = -1;
-static gpio_num_t s_ws_gpio = -1;
-static gpio_num_t s_dout_gpio = -1;
 
 bool BSP_MAX98357A_IsInitialized(void)
 {
@@ -86,9 +93,6 @@ esp_err_t BSP_MAX98357A_Init(const bsp_max98357a_config_t *config)
 
     s_sample_rate_hz = config->sample_rate_hz;
     s_initialized = true;
-    s_bclk_gpio = config->bclk_gpio;
-    s_ws_gpio = config->ws_gpio;
-    s_dout_gpio = config->data_out_gpio;
 
     /* 3. 如果指定了 SD 引脚，初始化为输出并拉高（打开功放） */
     if (config->sd_gpio >= 0) {
@@ -121,24 +125,6 @@ esp_err_t BSP_MAX98357A_Deinit(void)
     if (s_sd_gpio >= 0) {
         gpio_set_level(s_sd_gpio, 0);  /* 低电平 = 关断 */
     }
-
-    /* 关键：reset 共享 GPIO（BCLK/WS/DOUT），从 I2S 矩阵中释放。
-     * 与 INMP441 共享 BCLK/WS，必须释放后对方才能正确初始化。 */
-    if (s_bclk_gpio >= 0) {
-        gpio_reset_pin(s_bclk_gpio);
-    }
-    if (s_ws_gpio >= 0) {
-        gpio_reset_pin(s_ws_gpio);
-    }
-    if (s_dout_gpio >= 0) {
-        gpio_reset_pin(s_dout_gpio);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    s_bclk_gpio = -1;
-    s_ws_gpio = -1;
-    s_dout_gpio = -1;
 
     if (ret != ESP_OK) {
         return ret;

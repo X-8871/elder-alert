@@ -36,8 +36,5 @@ esp_err_t AlertController_ApplyRisk(const risk_result_t *risk_result);
 /** 用户确认告警后静音本地声光，不改变业务上的风险状态。 */
 esp_err_t AlertController_Confirm(void);
 
-/** 让蜂鸣器短响一声（约 200ms），不改变当前声光模式。用于 Agent 命令。 */
-esp_err_t AlertController_BeepOnce(void);
-
 /** 周期刷新 LED / 蜂鸣器输出节拍，需在主循环中持续调用。 */
 esp_err_t AlertController_Update(void);
